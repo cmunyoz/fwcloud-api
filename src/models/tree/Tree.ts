@@ -34,6 +34,19 @@ var fwc_tree_node = require("./node.js");
 
 const tableName: string = "fwc_tree";
 
+export type TreeNode = {
+    id: number;
+    pid: number;
+    node_type: string;
+    text: string;
+    id_obj: number;
+    obj_type: number;
+    fwcloud: number;
+    children: TreeNode[]
+}
+
+export type TreeType = 'FIREWALLS' | 'OBJECTS' | 'SERVICES' | 'CA'; 
+
 export class Tree extends Model {
 
     @PrimaryGeneratedColumn()
@@ -74,8 +87,8 @@ export class Tree extends Model {
 
             req.dbCon.query(sql, (error, rows) => {
                 if (error) return reject(error);
-                if (rows.lenght === 0) return reject(fwcError.other(`Root node of type '${type}' not found`));
-                if (rows.lenght > 1) return reject(fwcError.other(`Found more than one root nodes of type '${type}'`));
+                if (rows.length === 0) return reject(fwcError.other(`Root node of type '${type}' not found`));
+                if (rows.length > 1) return reject(fwcError.other(`Found more than one root nodes of type '${type}'`));
                 resolve(rows[0]);
             });
         });
@@ -93,8 +106,8 @@ export class Tree extends Model {
 
             dbCon.query(sql, (error, rows) => {
                 if (error) return reject(error);
-                if (rows.lenght === 0) return reject(fwcError.other(`Node not found`));
-                if (rows.lenght > 1) return reject(fwcError.other(`Found more than one nodes`));
+                if (rows.length === 0) return reject(fwcError.other(`Node not found`));
+                if (rows.length > 1) return reject(fwcError.other(`Found more than one nodes`));
                 resolve(rows[0]);
             });
         });
@@ -108,46 +121,180 @@ export class Tree extends Model {
             });
         });
     }
-
-    //Get COMPLETE TREE from idparent
-    public static getTree(req, idparent, tree, objStandard, objCloud, order_mode) {
+    
+    //Get ipobjects node info.
+    public static getNodeInfo(dbCon, fwcloud, node_type, id_obj?) {
         return new Promise((resolve, reject) => {
-            var sqlfwcloud = "";
-            if (objStandard === 1 && objCloud === 0) // Only Standard objects
-                sqlfwcloud = ` AND (T.fwcloud is null OR (T.id_obj is null AND T.fwcloud=${req.body.fwcloud})) `;
-            else if (objStandard === 0 && objCloud === 1) // Only fwcloud objects
-                sqlfwcloud = ` AND (T.fwcloud=${req.body.fwcloud} OR (T.id_obj is null AND T.fwcloud=${req.body.fwcloud})) `;
-            else if (objStandard === 1 && objCloud === 1) // All objects
-                sqlfwcloud = ` AND (T.fwcloud=${req.body.fwcloud} OR T.fwcloud is null OR (T.id_obj is null AND T.fwcloud=${req.body.fwcloud})) `;
-            else // No objects.
-                sqlfwcloud = ` AND (T.fwcloud is not null AND (T.id_obj is null AND T.fwcloud=${req.body.fwcloud})) `;
+            let sql = `SELECT * FROM ${tableName}
+                WHERE fwcloud${(!fwcloud ? " IS NULL" : ("=" + fwcloud))} 
+                AND node_type=${dbCon.escape(node_type)}`;
 
-            const sqlorder = (order_mode === 2) ? 'name' : 'id';
+            if (id_obj !== undefined) {
+                sql = sql + ` AND id_obj${(!id_obj ? " IS NULL" : ("=" + id_obj))}`
+            }
 
-            //Get ALL CHILDREN NODES FROM idparent
-            const sql = `SELECT T.*, P.order_mode FROM ${tableName} T
-			LEFT JOIN fwc_tree_node_types P on T.node_type=P.node_type
-			WHERE T.id_parent=${idparent} ${sqlfwcloud} ORDER BY ${sqlorder}`;
+            dbCon.query(sql, (error, result) => {
+                if (error) return reject(error);
+                resolve(result);
+            });
+        });
+    };
 
-            req.dbCon.query(sql, async (error, nodes) => {
+    //Get node info under firewall
+    public static getNodeUnderFirewall(dbCon, fwcloud, firewall, node_type) {
+        return new Promise((resolve, reject) => {
+            // Nodes in level 2.
+            let sql = `SELECT T2.* FROM ${tableName} T1
+                INNER JOIN ${tableName} T2 ON T2.id_parent=T1.id
+                WHERE T1.fwcloud=${fwcloud} AND (T1.node_type='FW' OR T1.node_type='CL')  
+                AND T2.id_obj=${firewall} AND T2.node_type=${dbCon.escape(node_type)}`;
+            dbCon.query(sql, (error, result) => {
                 if (error) return reject(error);
 
-                try {
-                    for (let node of nodes) {
-                        var tree_node = new fwc_tree_node(node);
+                // If found a node in level 2 return it.
+                if (result.length > 0) return resolve(result[0]);
 
-                        if (await this.hasChilds(req, node.id)) {
-                            var subtree = new _Tree(tree_node);
-                            tree.append([], subtree);
-                            await this.getTree(req, node.id, subtree, objStandard, objCloud, node.order_mode);
-                        } else
-                            tree.append([], tree_node);
-                    }
-                    resolve(tree);
+                // If not look for nodes in level 3.
+                sql = `SELECT T3.* FROM ${tableName} T1
+                    INNER JOIN ${tableName} T2 ON T2.id_parent=T1.id
+                    INNER JOIN ${tableName} T3 ON T3.id_parent=T2.id
+                    WHERE T1.fwcloud=${fwcloud} AND (T1.node_type='FW' OR T1.node_type='CL')  
+                    AND T2.id_obj=${firewall} AND T3.node_type=${dbCon.escape(node_type)}`;
+                dbCon.query(sql, (error, result) => {
+                    if (error) return reject(error);
+                    resolve(result.length > 0 ? result[0] : null);
+                });
+            });
+        });
+    };
+
+
+    private static oderNodeBy(node: TreeNode, nodeType: string[], orderBy: string): Promise<void> {
+        return new Promise(async (resolve, reject) => {
+            if (nodeType.includes(node.node_type)) {                
+                node.children.sort((a: TreeNode, b: TreeNode) => {
+                    if (a[orderBy] < b[orderBy]) return -1;
+                    if (a[orderBy] > b[orderBy]) return 1;
+                    return 0;
+                });
+            }
+
+            // Recursively apply the ordering to all nodes in the tree.
+            await Promise.all(node.children.map(node => this.oderNodeBy(node,nodeType,orderBy)));
+
+            resolve();
+        });
+    }
+
+    private static nodesUnderNodes(dbCon: any, nodes: TreeNode[], orderBy: string): Promise<TreeNode[]> {
+        return new Promise((resolve, reject) => {
+            const sql = `select id, name as text, id_parent as pid, node_type, id_obj, obj_type, fwcloud
+                from fwc_tree where id_parent in (${nodes.map(node => node.id)}) order by ${orderBy}`
+
+            dbCon.query(sql, async (error, nodes) => {
+                if (error) return reject(error);
+
+                resolve(nodes);
+            });
+        });
+    }
+    
+    public static dumpTree(dbCon: any, treeType: TreeType, fwcloud: number): Promise<TreeNode> {
+        return new Promise((resolve, reject) => {
+            // Query for get the root node.
+            const sql = `select id, name as text, id_parent as pid, node_type, id_obj, obj_type, fwcloud  
+                from fwc_tree where fwcloud=${fwcloud} and id_parent is null and name='${treeType}'`;
+
+            dbCon.query(sql, async (error, nodes) => {
+                if (error) return reject(error);
+                if (nodes.length === 0) return reject(new Error('Root node not found'));
+
+                try {
+                    const rootNode: TreeNode = nodes[0];
+                    rootNode.children = []; 
+                    
+                    const childrenArrayMap: Map<number, TreeNode[]> = new Map<number, TreeNode[]>();
+                    childrenArrayMap.set(rootNode.id, rootNode.children);
+
+                    let orderBy: string;
+                    // Next levels nodes.
+                    for(let level=1; nodes.length > 0; level++) {
+                        if (treeType==='FIREWALLS' && level>1) orderBy='id';
+                        else if ((treeType==='OBJECTS' || treeType==='SERVICES') && level===1) orderBy='id';
+                        else orderBy = 'name'
+
+                        nodes = await this.nodesUnderNodes(dbCon,nodes,orderBy);
+
+                        for(let i=0; i<nodes.length; i++) {
+                            // Add the new nodes children arrays to the map.
+                            nodes[i].children = [];
+                            childrenArrayMap.set(nodes[i].id, nodes[i].children);
+
+                            // Add the new nodes to the children arrays of its parent node.
+                            const parentChildren: TreeNode[] = childrenArrayMap.get(nodes[i].pid);
+                            parentChildren.push(nodes[i]);
+                        }
+                    }   
+                    
+                    if (treeType==='FIREWALLS') // Sort nodes into FD type nodes (folders) by name.
+                        await Promise.all(rootNode.children.map(node => this.oderNodeBy(node,['FD','FDI'],'text')));
+                    else if (treeType==='SERVICES' || treeType==='OBJECTS') // Include data for advanced search.
+                        await this.addSearchInfo(dbCon, childrenArrayMap, treeType);
+
+                    resolve(rootNode);
                 } catch (error) { reject(error) }
             });
         });
     }
+
+    private static addSearchInfo(dbCon: any, childrenArrayMap: Map<number, TreeNode[]>, treeType: TreeType): Promise<void> {
+        return new Promise((resolve, reject) => {
+            let fields = '';
+            let nodeTypes: string[];
+
+            if (treeType==='SERVICES') {
+                fields = 'source_port_start, source_port_end, destination_port_start, destination_port_end';
+                nodeTypes = ['SOT', 'SOU'];
+            }
+            else if (treeType==='OBJECTS')  {
+                fields = 'address, range_start, range_end';
+                nodeTypes = ['OIA', 'OIN', 'OIR'];
+            }
+            else return resolve();
+
+            // Map each id_obj that matches the node_type with its tree node.
+            const nodesMap: Map<number, TreeNode> = new Map<number, TreeNode>();
+
+            let item: [number, TreeNode[]];
+            let ids = '';
+            for (let mapIter = childrenArrayMap.entries(); item = mapIter.next().value; ) {
+                const nodesArray = item[1];
+                for (let i=0; i<nodesArray.length; i++) {
+                    if (nodeTypes.indexOf(nodesArray[i].node_type) !== -1 && nodesArray[i].id_obj) {
+                        nodesMap.set(nodesArray[i].id_obj,nodesArray[i]);
+                        ids += `${nodesArray[i].id_obj},`      
+                    }
+                }
+            }
+            if (ids.length===0) return resolve();
+            ids = ids.slice(0,-1);
+            
+            const sql = `select id, ${fields} from ipobj where id in (${ids})`
+
+            dbCon.query(sql, async (error, ipobjs) => {
+                if (error) return reject(error);
+
+                for (let i=0; i<ipobjs.length; i++) {
+                    let node: TreeNode = <TreeNode>nodesMap.get(ipobjs[i].id);
+                    delete ipobjs[i].id;
+                    Object.assign(node, ipobjs[i]);
+                }
+
+                resolve();
+            });
+        });
+    }
+
 
     // Put STD folders first.
     public static stdFoldersFirst(root_node) {
@@ -338,6 +485,23 @@ export class Tree extends Model {
         });
     }
 
+    //Update routing table node.
+    public static updateRoutingTableNodeName(fwcloud: number, id: number, name: string): Promise<void> {
+        return new Promise((resolve, reject) => {
+            db.get((error, connection) => {
+                if (error) return reject(error);
+                
+                let sql = `UPDATE ${tableName} SET name=${connection.escape(name)} 
+                    WHERE node_type='RT' AND fwcloud=${fwcloud} AND id_obj=${id}`;
+
+                connection.query(sql, (error, result) => {
+                    if (error) return reject(error);
+                    resolve();
+                });
+            });
+        });
+    }
+    
     public static createObjectsTree(dbCon: Query, fwCloudId: number) {
         return new Promise(async (resolve, reject) => {
             try {
@@ -562,7 +726,7 @@ export class Tree extends Model {
     };
 
     //Generate the interfaces nodes.
-    public static interfacesTree(connection, fwcloud, nodeId, ownerId, ownerType) {
+    public static interfacesTree(connection, fwcloud, nodeId, ownerId, ownerType): Promise<void> {
         return new Promise((resolve, reject) => {
             // Get firewall interfaces.  
             let sql = '';
@@ -583,7 +747,7 @@ export class Tree extends Model {
 
             connection.query(sql, async (error, interfaces) => {
                 if (error) return reject(error);
-                if (interfaces.length === 0) resolve();
+                if (interfaces.length === 0) return resolve();
 
                 try {
                     for (let _interface of interfaces) {
@@ -597,7 +761,7 @@ export class Tree extends Model {
     };
 
     //Generate the OpenVPN client nodes.
-    public static openvpnClientTree(connection, fwcloud, firewall, server_vpn, node) {
+    public static openvpnClientTree(connection, fwcloud, firewall, server_vpn, node): Promise<void> {
         return new Promise((resolve, reject) => {
             // Get client OpenVPN configurations.
             const sql = `SELECT VPN.id,CRT.cn FROM openvpn VPN
@@ -605,7 +769,7 @@ export class Tree extends Model {
 			WHERE VPN.firewall=${firewall} and VPN.openvpn=${server_vpn}`
             connection.query(sql, async (error, vpns) => {
                 if (error) return reject(error);
-                if (vpns.length === 0) resolve();
+                if (vpns.length === 0) return resolve();
 
                 try {
                     for (let vpn of vpns) {
@@ -618,7 +782,7 @@ export class Tree extends Model {
     };
 
     //Generate the OpenVPN server nodes.
-    public static openvpnServerTree(connection, fwcloud, firewall, node) {
+    public static openvpnServerTree(connection, fwcloud, firewall, node): Promise<void> {
         return new Promise((resolve, reject) => {
             // Get server OpenVPN configurations.
             const sql = `SELECT VPN.id,CRT.cn FROM openvpn VPN
@@ -626,7 +790,7 @@ export class Tree extends Model {
 			WHERE VPN.firewall=${firewall} and VPN.openvpn is null`
             connection.query(sql, async (error, vpns) => {
                 if (error) return reject(error);
-                if (vpns.length === 0) resolve();
+                if (vpns.length === 0) return resolve();
 
                 try {
                     for (let vpn of vpns) {
@@ -636,6 +800,66 @@ export class Tree extends Model {
                 } catch (error) { return reject(error) }
                 resolve();
             });
+        });
+    };
+
+    //Generate the routing nodes.
+    public static routingTree(connection: any, fwcloud: number, firewall: number, node: number): Promise<void> {
+        return new Promise(async (resolve, reject) => {
+            let id3: any;
+            try {
+                const id2 = await this.newNode(connection, fwcloud, 'Routing', node, 'ROU', firewall, null);
+                await this.newNode(connection, fwcloud, 'POLICY', id2, 'RR', firewall, null);
+                id3 = await this.newNode(connection, fwcloud, 'TABLES', id2, 'RTS', firewall, null);
+            } catch(error) { return reject(error) }
+
+            const sql = `SELECT id,name FROM routing_table WHERE firewall=${firewall}`
+            connection.query(sql, async (error, tables) => {
+                if (error) return reject(error);
+                if (tables.length === 0) return resolve();
+
+                try {
+                    for (let table of tables)
+                        await this.newNode(connection, fwcloud, table.name, id3, 'RT', table.id, null);
+                } catch (error) { return reject(error) }
+                resolve();
+            });
+        });
+    };
+
+    //Generate the routing nodes.
+    public static makeSureRoutingTreeExists(connection: any, fwcloud: number, children: any): Promise<boolean> {
+        return new Promise(async (resolve, reject) => {
+            if (!children) return resolve(false);
+
+            let treeReload = false;
+            for (let i=0; i<children.length; i++) {
+                if (children[i].node_type === 'FW' || children[i].node_type === 'CL') {
+                    // Search for the routing node.
+                    const grandchild = children[i].children;
+                    let found = false;
+                    for (let j=grandchild.length-1; j!=0; j--) {
+                        if (grandchild[j].node_type === 'ROU') {
+                            found = true;
+                            break;
+                        }
+                    }
+
+                    if (!found) {
+                        // create the routing nodes.
+                        let firewallId = 0;
+                        for (let j=0; j < grandchild.length; j++) {
+                            if (grandchild[j].node_type === 'FDI') 
+                                firewallId = grandchild[j].id_obj;
+                        }
+                        await this.routingTree(connection, fwcloud, firewallId, children[i].id);
+                        treeReload = true;
+                    }
+                } else if (children[i].node_type === 'FD') // Recursive call for firewall folders.
+                    treeReload = await this.makeSureRoutingTreeExists(connection, fwcloud, children[i].children);
+            }
+
+            resolve(treeReload);
         });
     };
 
@@ -653,7 +877,7 @@ export class Tree extends Model {
 
                     try {
                         // Create root firewall node
-                        let id1 = await this.newNode(connection, fwcloud, firewalls[0].name, nodeId, 'FW', firewallId, 0);
+                        let id1: any = await this.newNode(connection, fwcloud, firewalls[0].name, nodeId, 'FW', firewallId, 0);
 
                         let id2 = await this.newNode(connection, fwcloud, 'IPv4 POLICY', id1, 'FP', firewallId, null);
                         await this.newNode(connection, fwcloud, 'INPUT', id2, 'PI', firewallId, null);
@@ -675,7 +899,7 @@ export class Tree extends Model {
                         id2 = await this.newNode(connection, fwcloud, 'OpenVPN', id1, 'OPN', firewallId, 0);
                         await this.openvpnServerTree(connection, fwcloud, firewallId, id2);
 
-                        //await this.newNode(connection,fwcloud,'Routing',id1,'RR',firewallId,6);					
+                        await this.routingTree(connection, fwcloud, firewallId, id1);
                     } catch (error) { return reject(error) }
                     resolve();
                 });
@@ -719,7 +943,7 @@ export class Tree extends Model {
 
                     try {
                         // Create root cluster node
-                        let id1 = await this.newNode(connection, fwcloud, clusters[0].name, nodeId, 'CL', clusters[0].id, 100);
+                        let id1: any = await this.newNode(connection, fwcloud, clusters[0].name, nodeId, 'CL', clusters[0].id, 100);
 
                         let id2 = await this.newNode(connection, fwcloud, 'IPv4 POLICY', id1, 'FP', clusters[0].fwmaster_id, null);
                         await this.newNode(connection, fwcloud, 'INPUT', id2, 'PI', clusters[0].fwmaster_id, null);
@@ -741,8 +965,8 @@ export class Tree extends Model {
                         id2 = await this.newNode(connection, fwcloud, 'OpenVPN', id1, 'OPN', clusters[0].fwmaster_id, 0);
                         await this.openvpnServerTree(connection, fwcloud, clusters[0].fwmaster_id, id2);
 
-                        //await this.newNode(connection,fwcloud,'Routing',id1,'RR',clusters[0].fwmaster_id,6);					
-
+                        await this.routingTree(connection, fwcloud, clusters[0].fwmaster_id, id1);
+                        
                         id2 = await this.newNode(connection, fwcloud, 'NODES', id1, 'FCF', clusters[0].fwmaster_id, null);
 
                         // Create the nodes for the cluster firewalls.
@@ -1205,39 +1429,6 @@ export class Tree extends Model {
                     );
                 } else
                     callback(null, { "result": true });
-            });
-        });
-    };
-
-
-    //Get ipobjects node info.
-    public static getNodeInfo(dbCon, fwcloud, node_type, id_obj?) {
-        return new Promise((resolve, reject) => {
-            let sql = `SELECT * FROM ${tableName}
-                WHERE fwcloud${(!fwcloud ? " IS NULL" : ("=" + fwcloud))} 
-                AND node_type=${dbCon.escape(node_type)}`;
-
-            if (id_obj !== undefined) {
-                sql = sql + ` AND id_obj${(!id_obj ? " IS NULL" : ("=" + id_obj))}`
-            }
-
-            dbCon.query(sql, (error, result) => {
-                if (error) return reject(error);
-                resolve(result);
-            });
-        });
-    };
-
-    //Get node info under firewall
-    public static getNodeUnderFirewall(dbCon, fwcloud, firewall, node_type) {
-        return new Promise((resolve, reject) => {
-            let sql = `SELECT T2.* FROM ${tableName} T1
-			INNER JOIN ${tableName} T2 ON T2.id_parent=T1.id
-			WHERE T1.fwcloud=${fwcloud} AND (T1.node_type='FW' OR T1.node_type='CL')  
-			AND T2.id_obj=${firewall} AND T2.node_type=${dbCon.escape(node_type)}`;
-            dbCon.query(sql, (error, result) => {
-                if (error) return reject(error);
-                resolve(result.length > 0 ? result[0] : null);
             });
         });
     };

@@ -25,12 +25,11 @@ import Model from '../Model';
 import { Interface } from '../../models/interface/Interface';
 import { IPObjGroup } from '../../models/ipobj/IPObjGroup';
 import { PolicyRule } from '../../models/policy/PolicyRule';
-import { PolicyRuleToInterface } from './PolicyRuleToInterface';
-import { Between, Entity, TableIndex, Column, getRepository, PrimaryGeneratedColumn, PrimaryColumn, Repository, ManyToOne, JoinColumn } from 'typeorm';
-import { PolicyCompilation } from './PolicyCompilation';
-import { app, logger } from '../../fonaments/abstract-application';
-import { IPObj } from '../ipobj/IPObj';
+import { Entity, Column, PrimaryGeneratedColumn, ManyToOne, JoinColumn, getRepository } from 'typeorm';
+import { logger } from '../../fonaments/abstract-application';
 import { PolicyPosition } from './PolicyPosition';
+import { RulePositionsMap } from '../../models/policy/PolicyPosition';
+import { IPObj } from '../ipobj/IPObj';
 var asyncMod = require('async');
 const fwcError = require('../../utils/error_table');
 
@@ -78,8 +77,6 @@ export class PolicyRuleToIPObj extends Model {
     })
     policyRule: PolicyRule;
 
-    /**
-    * Pending foreign keys.
     @ManyToOne(type => IPObj, ipObj => ipObj.policyRuleToIPObjs)
     @JoinColumn({
         name: 'ipobj'
@@ -91,13 +88,13 @@ export class PolicyRuleToIPObj extends Model {
         name: 'interface'
     })
     interface: Interface;
-
+    
     @ManyToOne(type => IPObjGroup, model => model.policyRuleToIPObjs)
     @JoinColumn({
         name: 'ipobj_g'
     })
     ipObjGroup: IPObjGroup;
-    */
+    
 
     @ManyToOne(type => PolicyPosition, policyPosition => policyPosition.policyRuleToIPObjs)
     @JoinColumn({
@@ -129,22 +126,21 @@ export class PolicyRuleToIPObj extends Model {
     };
 
     //Get All policy_r__ipobj by Policy_r (rule) and position
-    public static getPolicy_r__ipobjs_position(rule, position, callback) {
+    public static getRuleIPObjsByPosition(rule, position) {
+        return new Promise((resolve, reject) => {
+            db.get((error, connection) => {
+                if (error) return reject(error);
 
-        db.get((error, connection) => {
-            if (error)
-                callback(error, null);
+                let sql = `SELECT * FROM ${tableModel} 
+                    WHERE rule=${connection.escape(rule)} AND position=${connection.escape(position)}
+                    ORDER BY position_order`;
 
-            var sql = 'SELECT * FROM ' + tableModel + ' WHERE rule=' + connection.escape(rule) + ' AND position=' + connection.escape(position) + ' ORDER BY position_order';
-
-            connection.query(sql, (error, rows) => {
-                if (error)
-                    callback(error, null);
-                else
-                    callback(null, rows);
+                connection.query(sql, (error, rows) => {
+                    if (error) return reject(error);
+                    resolve(rows);
+                });
             });
         });
-
     };
 
     //Get All policy_r__ipobj by Policy_r (rule) and position
@@ -666,7 +662,7 @@ export class PolicyRuleToIPObj extends Model {
     };
 
     //Remove policy_r__ipobj 
-    public static deletePolicy_r__ipobj(dbCon, rule, ipobj, ipobj_g, _interface, position, position_order, callback) {
+    public static deletePolicy_r__ipobj(dbCon, rule, ipobj, ipobj_g, _interface, position, position_order) {
         return new Promise(async (resolve, reject) => {
             var sqlExists = `SELECT * FROM ${tableModel}
                 WHERE rule=${dbCon.escape(rule)} AND ipobj=${dbCon.escape(ipobj)}
@@ -1184,7 +1180,7 @@ export class PolicyRuleToIPObj extends Model {
             db.get((error, connection) => {
                 if (error) return reject(error);
                 var sql = `SELECT O.ipobj_g obj_id,GR.name obj_name, GR.type obj_type_id,T.type obj_type_name,
-				C.id cloud_id, C.name cloud_name, R.firewall firewall_id, F.name firewall_name ,O.rule rule_id, R.rule_order,R.type rule_type,PT.name rule_type_name,
+				C.id cloud_id, C.name cloud_name, R.firewall firewall_id, F.name firewall_name, O.rule rule_id, R.rule_order,R.type rule_type,PT.name rule_type_name,
 				O.position rule_position_id, P.name rule_position_name, R.comment rule_comment,
 				F.cluster as cluster_id, IF(F.cluster is null,null,(select name from cluster where id=F.cluster)) as cluster_name
 				FROM policy_r__ipobj O
@@ -1350,26 +1346,63 @@ export class PolicyRuleToIPObj extends Model {
         });
     };
 
-    //check if Exist IPOBJS under INTERFACES  
-    public static searchIpobjInterfaces = (ipobj, type, fwcloud) => {
-        return new Promise((resolve, reject) => {
-            db.get((error, connection) => {
-                if (error) return reject(error);
-                var sql = 'SELECT I.id obj_id,I.name obj_name, I.type obj_type_id,T.type obj_type_name, ' +
-                    'C.id cloud_id, C.name cloud_name, K.id interface_id, K.name interface_name, K.interface_type interface_type_id, TK.type interface_type ' +
-                    'FROM ipobj I ' +
-                    'INNER JOIN interface K on K.id=I.interface ' +
-                    'inner join ipobj_type T on T.id=I.type ' +
-                    'inner join ipobj_type TK on TK.id=K.interface_type ' +
-                    'left join fwcloud C on C.id=I.fwcloud ' +
-                    ' WHERE I.id=' + ipobj + ' AND I.type=' + type + ' AND (I.fwcloud=' + fwcloud + ' OR I.fwcloud IS NULL)';
-                connection.query(sql, (error, rows) => {
-                    if (error) return reject(error);
-                    resolve(rows);
-                });
-            });
-        });
-    };
+    public static async searchLastAddrInHostInGroup(ipObjId: number, type: number, fwcloudId: number): Promise<PolicyRule[]> {
+        const policyRuleToIPObjGroups: PolicyRuleToIPObj[] = await getRepository(PolicyRuleToIPObj).createQueryBuilder('policyRuleToIPObj')
+            .innerJoinAndSelect('policyRuleToIPObj.ipObjGroup', 'ipObjGroup')
+            .innerJoinAndSelect('ipObjGroup.ipObjToIPObjGroups', 'ipObjToIPObjGroups')
+            .innerJoin('ipObjToIPObjGroups.ipObj', 'ipobj')
+            .innerJoin('ipobj.hosts', 'interfaceIPObj')
+            .innerJoin('policyRuleToIPObj.policyRule', 'rule')
+            .innerJoin('interfaceIPObj.hostInterface', 'interface')
+            .innerJoin('interface.ipObjs', 'intIPObj')
+            .innerJoin('rule.firewall', 'firewall')
+            .where('intIPObj.id = :ipObjId', {ipObjId})
+            .andWhere('firewall.fwCloudId = :fwcloudId', {fwcloudId})  
+            .getMany();
+
+        let result: PolicyRuleToIPObj[] = [];
+        
+        for (let policyRuleToIPObjGroup of policyRuleToIPObjGroups) {
+            for(let ipObjToIPObjGroup of policyRuleToIPObjGroup.ipObjGroup.ipObjToIPObjGroups) {
+                let addrs: any = await Interface.getHostAddr(db.getQuery(), ipObjToIPObjGroup.ipObjId);
+
+                // Count the amount of interface address with the same IP version of the rule.
+                let n = 0;
+                let id = 0;
+                for (let addr of addrs) {
+                    n++;
+                    if (n === 1) id = addr.id;
+                }
+
+                // We are the last IP address in the host used in a firewall rule.
+                if (n === 1 && ipObjId === id)
+                    result.push(policyRuleToIPObjGroup);
+            }
+        }
+
+        if (result.length === 0) {
+            return [];
+        }
+
+        return await getRepository(PolicyRule).createQueryBuilder('rule')
+            .distinct()
+            .addSelect('firewall.id', 'firewall_id')
+            .addSelect('firewall.name', 'firewall_name')
+            .addSelect('cluster.id', 'cluster_id')
+            .addSelect('cluster.name', 'cluster_name')
+            .addSelect('type.name', 'rule_type_name')
+            .addSelect('position.id', 'rule_position_id')
+            .addSelect('position.name', 'rule_position_name')
+            .innerJoin('rule.policyRuleToIPObjs', 'policyRuleToIPObj')
+            .innerJoin('policyRuleToIPObj.policyPosition', 'position')
+            .innerJoin('policyRuleToIPObj.ipObjGroup', 'group')
+            .innerJoin('rule.policyType', 'type')
+            .innerJoin('rule.firewall', 'firewall')
+            .leftJoin('firewall.cluster', 'cluster')
+            .where('rule.id IN (:ids)', {ids: result.map(item => item.policyRuleId)})
+            .andWhere('group.type = 20')
+        .getRawMany();
+    }
 
     //check if Exist IPOBJS under INTERFACES  IN RULES 
     public static searchIpobjInterfaceInRule = (_interface, type, fwcloud, firewall, diff_firewall) => {
@@ -1407,8 +1440,8 @@ export class PolicyRuleToIPObj extends Model {
         return new Promise((resolve, reject) => {
             db.get((error, connection) => {
                 if (error) return reject(error);
-                var sql = `SELECT G.*, I.id obj_id, I.name obj_name, I.type obj_type_id, T.type obj_type_name,
-				G.id group_id, G.name group_name
+                var sql = `SELECT I.id obj_id, I.name obj_name, I.type obj_type_id, T.type obj_type_name,
+				G.id group_id, G.name group_name, G.type group_type
 				FROM ipobj__ipobjg O
 				INNER JOIN ipobj_g G ON G.id=O.ipobj_g
 				INNER JOIN ipobj I ON I.id=O.ipobj
@@ -1452,8 +1485,17 @@ export class PolicyRuleToIPObj extends Model {
                     // If this is a services group, then we don't need to check the IP version.
                     if (groupData[0].type === 21) return resolve(true);
 
-                    const groupIPv = await IPObjGroup.groupIPVersion(req.dbCon, req.body.ipobj_g);
-                    resolve(groupIPv === rule_ip_version ? true : false);
+                    const groupIPv: {ipv4: boolean, ipv6: boolean} = await IPObjGroup.groupIPVersion(req.dbCon, req.body.ipobj_g);
+
+                    if (rule_ip_version === 4 && groupIPv.ipv4) {
+                        return resolve(true);
+                    }
+
+                    if (rule_ip_version === 6 && groupIPv.ipv6) {
+                        return resolve(true);
+                    }
+
+                    resolve(false);
                 } catch (error) { return reject(error) }
             } else resolve(true);
         });

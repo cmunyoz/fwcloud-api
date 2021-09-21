@@ -27,13 +27,17 @@ import { InterfaceIPObj } from '../../models/interface/InterfaceIPObj';
 import { IPObjToIPObjGroup } from '../../models/ipobj/IPObjToIPObjGroup';
 import { Interface } from '../../models/interface/Interface';
 import Model from '../Model';
-import { PrimaryGeneratedColumn, Column, Entity, getRepository, Repository, ManyToOne, JoinColumn, OneToMany, ManyToMany } from 'typeorm';
+import { PrimaryGeneratedColumn, Column, Entity, ManyToOne, JoinColumn, OneToMany, ManyToMany, getRepository, SelectQueryBuilder } from 'typeorm';
 import { FwCloud } from '../fwcloud/FwCloud';
-import { app, logger } from '../../fonaments/abstract-application';
+import { logger } from '../../fonaments/abstract-application';
 import { IPObjType } from './IPObjType';
 import { OpenVPNOption } from '../vpn/openvpn/openvpn-option.model';
-import { PolicyRule } from '../policy/PolicyRule';
-import { RoutingRuleToIPObj } from '../routing/routing-rule-to-ipobj.model';
+import { Route } from '../routing/route/route.model';
+import { RoutingRule } from '../routing/routing-rule/routing-rule.model';
+import { IdManager } from '../../fwcloud-exporter/database-importer/terraformer/mapper/id-manager';
+import { RouteToIPObj } from '../routing/route/route-to-ipobj.model';
+import { RoutingRuleToIPObj } from '../routing/routing-rule/routing-rule-to-ipobj.model';
+const ip = require('ip');
 var asyncMod = require('async');
 var host_Data = require('../../models/data/data_ipobj_host');
 var interface_Data = require('../../models/data/data_interface');
@@ -151,14 +155,21 @@ export class IPObj extends Model {
     @OneToMany(type => InterfaceIPObj, interfaceIPObj => interfaceIPObj.hostIPObj)
     hosts!: Array<InterfaceIPObj>;
 
-    /**
-    * Pending foreign keys.
     @OneToMany(type => PolicyRuleToIPObj, policyRuleToIPObj => policyRuleToIPObj.ipObj)
     policyRuleToIPObjs: Array<PolicyRuleToIPObj>;
-    */
 
-    @OneToMany(type => RoutingRuleToIPObj, routingRuleToIPObj => routingRuleToIPObj.ipObj)
-    routingRuleToIPObjs: Array<RoutingRuleToIPObj>;
+    @OneToMany(type => Route, model => model.gateway)
+	routeGateways: Route[];
+
+    @OneToMany(() => RoutingRuleToIPObj, model => model.ipObj, {
+        cascade: true,
+    })
+    routingRuleToIPObjs: RoutingRuleToIPObj[];
+
+    @OneToMany(() => RouteToIPObj, model => model.ipObj, {
+        cascade: true,
+    })
+    routeToIPObjs: RouteToIPObj[];
 
     public getTableName(): string {
         return tableName;
@@ -334,45 +345,6 @@ export class IPObj extends Model {
     };
 
 
-    public static getFinalIpobjPro(position_ipobj) {
-        return new Promise((resolve, reject) => {
-            db.get((error, connection) => {
-                if (error) return reject(error);
-
-                var sql = "";
-
-                if (position_ipobj.type === "O") {
-                    //SELECT IPOBJ DATA UNDER POSITION
-                    sql = 'SELECT I.*' +
-                        ' FROM ' + tableName + ' I ' +
-                        ' WHERE I.id = ' + connection.escape(position_ipobj.ipobj) + ' AND (I.fwcloud=' + connection.escape(position_ipobj.fwcloud) + ' OR I.fwcloud IS NULL)';
-                } else {
-                    sql = 'SELECT I.*' +
-                        ' FROM interface I ' +
-                        ' WHERE I.id = ' + connection.escape(position_ipobj.interface);
-                }
-                //logger().debug("getIpobjPro -> ", sql);
-                connection.query(sql, (error, row) => {
-                    if (error) {
-                        reject(error);
-                    } else {
-                        if (row.length > 0) {
-                            //RETURN IPOBJ DATA
-                            var ipobj = new data_policy_position_ipobjs(row[0], position_ipobj.position_order, position_ipobj.type);
-                            //logger().debug("------------------- > ENCONTRADO IPOBJ: " + position_ipobj.ipobj + "  EN POSITION: " + position_ipobj.position);
-                            resolve(ipobj);
-
-                        } else {
-                            resolve({});
-                        }
-
-
-                    }
-                });
-            });
-        });
-    };
-
     //Get ipobj HOST by  id and ALL IPOBjs
     /**
      * Get ipobj HOST DATA and Interfaces and Ipobj bellow Interfaces
@@ -391,6 +363,7 @@ export class IPObj extends Model {
         var ipobjs_cont = 0;
         var interfaces_cont = 0;
 
+
         db.get((error, connection) => {
             if (error)
                 AllDone(error, null);
@@ -400,6 +373,7 @@ export class IPObj extends Model {
                 sqlId = ' AND G.id = ' + connection.escape(id);
             var sql = 'SELECT G.*,  T.id id_node, T.id_parent id_parent_node FROM ' + tableName + ' G ' +
                 'inner join fwc_tree T on T.id_obj=G.id and T.obj_type=G.type AND (T.fwcloud=' + connection.escape(fwcloud) + ' OR T.fwcloud IS NULL) ' +
+                'inner join fwc_tree ParentNode ON ParentNode.id = T.id_parent AND ParentNode.node_type = "OIH"' +
                 ' WHERE  (G.fwcloud= ' + connection.escape(fwcloud) + ' OR G.fwcloud is null) ' + sqlId;
             logger().debug(sql);
             connection.query(sql, (error, rows) => {
@@ -974,7 +948,7 @@ export class IPObj extends Model {
      }
      *      
      * */
-    public static searchIpobjUsage(dbCon, fwcloud, id, type) {
+    public static searchIpobjUsage(dbCon: any, fwcloud: number, id: number, type: number) {
         return new Promise(async (resolve, reject) => {
             try {
                 let search: any = {};
@@ -984,6 +958,12 @@ export class IPObj extends Model {
                 search.restrictions.IpobjInGroup = await IPObjToIPObjGroup.searchIpobjInGroup(id, type, fwcloud); //SEARCH IPOBJ IN GROUPS
                 search.restrictions.IpobjInGroupInRule = await PolicyRuleToIPObj.searchIpobjInGroupInRule(id, type, fwcloud); //SEARCH IPOBJ GROUP IN RULES
                 search.restrictions.IpobjInOpenVPN = await this.searchIpobjInOpenvpn(id, type, fwcloud); //SEARCH IPOBJ IN OpenVPN CONFIG
+
+                search.restrictions.IpobjInRoute = await this.searchIpobjInRoute(id, fwcloud);
+                search.restrictions.IpobjInRouteAsGateway = await this.searchIpobjInRouteAsGateway(id, fwcloud);
+                search.restrictions.IpobjInGroupInRoute = await this.searchIpobjInGroupInRoute(id, fwcloud);
+                search.restrictions.IpobjInRoutingRule = await this.searchIpobjInRoutingRule(id, fwcloud);
+                search.restrictions.IpobjInGroupInRoutingRule = await this.searchIpobjInGroupInRoutingRule(id, fwcloud);
 
                 if (type === 8) { // HOST
                     search.restrictions.InterfaceHostInRule = await PolicyRuleToIPObj.searchInterfaceHostInRule(dbCon, fwcloud, id);
@@ -996,6 +976,11 @@ export class IPObj extends Model {
                 if (type === 5) { // ADDRESS
                     search.restrictions.LastAddrInInterfaceInRule = await PolicyRuleToIPObj.searchLastAddrInInterfaceInRule(dbCon, id, type, fwcloud);
                     search.restrictions.LastAddrInHostInRule = await PolicyRuleToIPObj.searchLastAddrInHostInRule(dbCon, id, type, fwcloud);
+                    search.restrictions.LastAddrInGroupHostInRule = await PolicyRuleToIPObj.searchLastAddrInHostInGroup(id, type, fwcloud);
+                    search.restrictions.LastAddrInHostInRoute = await Route.getRouteWhichLastAddressInHost(id, type, fwcloud);
+                    search.restrictions.LastAddrInHostInRoutingRule = await RoutingRule.getRoutingRuleWhichLastAddressInHost(id, type, fwcloud);
+                    search.restrictions.LastAddrInGroupHostInRoute = await Route.getRouteWhichLastAddressInHostInGroup(id, type, fwcloud);
+                    search.restrictions.LastAddrInGroupHostInRoutingRule = await RoutingRule.getRoutingRuleWhichLastAddressInHostInGroup(id, type, fwcloud);
                 }
 
                 for (let key in search.restrictions) {
@@ -1009,60 +994,73 @@ export class IPObj extends Model {
         });
     };
 
-    /**
-     * ### searchIpobj
-     * Search where is used IPOBJ
-     * 
-     * @method searchIpobj
-     * 
-     * @param {Integer} id id ipobj identifier
-     * @param {Integer} type ipobj type
-     * @param {Integer} fwcloud FwCloud identifier
-     * 
-     * @return {JSON} Returns JSON result
-     * @example #### JSON RESPONSE OK
-     * 
-     *          {"result": true, "msg": "IPOBJ FOUND", 
-     *              "search": {
-     *                  "IpobjInRules": data_ipobj, 
-     *                  "IpobjInGroup": data_group, 
-     *                  "IpobjInterfaces": data_ipobj_interfaces
-     *                  }
-     *          }
-     * 
-     * #### JSON RESPONSE ERROR NOT EXIST:
-     * 
-     *      {"result": false, "msg": "IPOBJ NOT FOUND", 
-     *              "search": {
-     *                  "IpobjInRules": "", 
-     *                  "IpobjInGroup": "", 
-     *                  "IpobjInterfaces": ""
-     *               }
-     *      }
-     *      
-     * */
-    public static searchIpobj(id, type, fwcloud) {
-        return new Promise(async (resolve, reject) => {
-            try {
-                let search: any = {};
-                search.result = false;
-                search.restrictions = {};
-                search.restrictions.IpobjInRule = await PolicyRuleToIPObj.searchIpobjInRule(id, type, fwcloud); //SEARCH IPOBJ IN RULES
-                search.restrictions.IpobjInGroup = await IPObjToIPObjGroup.searchIpobjInGroup(id, type, fwcloud); //SEARCH IPOBJ IN GROUPS
-                search.restrictions.IpobjInterface = await PolicyRuleToIPObj.searchIpobjInterfaces(id, type, fwcloud); //SEARCH IPOBJ UNDER INTERFACES UNDER IPOBJ HOST IN RULES 'O' POSITONS
-                search.restrictions.IpobjInOpenVPN = await this.searchIpobjInOpenvpn(id, type, fwcloud); //SEARCH IPOBJ IN OpenVPN CONFIG
-
-                for (let key in search.restrictions) {
-                    if (search.restrictions[key].length > 0) {
-                        search.result = true;
-                        break;
-                    }
-                }
-                resolve(search);
-            } catch (error) { reject(error) }
-        });
+    public static async searchIpobjInRoute(ipobj: number, fwcloud: number): Promise<any> {
+        return await getRepository(Route).createQueryBuilder('route')
+            .addSelect('firewall.id', 'firewall_id').addSelect('firewall.name', 'firewall_name')
+            .addSelect('cluster.id', 'cluster_id').addSelect('cluster.name', 'cluster_name')
+            .addSelect('ipObj.id', 'ipobj_id').addSelect('ipObj.type', 'ipobj_type')
+            .innerJoin('route.routeToIPObjs', 'routeToIPObjs')
+            .innerJoin('routeToIPObjs.ipObj', 'ipObj', 'ipObj.id = :ipobj', {ipobj: ipobj})
+            .innerJoinAndSelect('route.routingTable', 'table')
+            .innerJoin('table.firewall', 'firewall')
+            .leftJoin('firewall.cluster', 'cluster')
+            .where(`firewall.fwCloudId = :fwcloud`, {fwcloud: fwcloud})
+            .getRawMany();
     };
 
+    public static async searchIpobjInRouteAsGateway(ipobj: number, fwcloud: number): Promise<any> {
+        return await getRepository(Route).createQueryBuilder('route')
+            .addSelect('firewall.id', 'firewall_id').addSelect('firewall.name', 'firewall_name')
+            .addSelect('cluster.id', 'cluster_id').addSelect('cluster.name', 'cluster_name')
+            .addSelect('gateway.id', 'gateway_id').addSelect('gateway.type', 'gateway_type')
+            .innerJoin('route.gateway', 'gateway', 'gateway.id = :ipobj', {ipobj: ipobj})
+            .innerJoinAndSelect('route.routingTable', 'table')
+            .innerJoin('table.firewall', 'firewall')
+            .leftJoin('firewall.cluster', 'cluster')
+            .where(`firewall.fwCloudId = :fwcloud`, {fwcloud: fwcloud})
+            .getRawMany();
+    };
+
+    public static async searchIpobjInRoutingRule(ipobj: number, fwcloud: number): Promise<any> {
+        return await getRepository(RoutingRule).createQueryBuilder('routing_rule')
+            .addSelect('firewall.id', 'firewall_id').addSelect('firewall.name', 'firewall_name')
+            .addSelect('cluster.id', 'cluster_id').addSelect('cluster.name', 'cluster_name')
+            .innerJoin('routing_rule.routingRuleToIPObjs', 'routingRuleToIPObjs')
+            .innerJoin('routingRuleToIPObjs.ipObj', 'ipObj', 'ipObj.id = :ipobj', {ipobj: ipobj})
+            .innerJoin('routing_rule.routingTable', 'table')
+            .innerJoin('table.firewall', 'firewall')
+            .leftJoin('firewall.cluster', 'cluster')
+            .where(`firewall.fwCloudId = :fwcloud`, {fwcloud: fwcloud})
+            .getRawMany();
+    };
+
+    public static async searchIpobjInGroupInRoute(ipobj: number, fwcloud: number): Promise<any> {
+        return await getRepository(Route).createQueryBuilder('route')
+            .addSelect('firewall.id', 'firewall_id').addSelect('firewall.name', 'firewall_name')
+            .addSelect('cluster.id', 'cluster_id').addSelect('cluster.name', 'cluster_name')
+            .innerJoinAndSelect('route.routingTable', 'table')
+            .innerJoin('route.routeToIPObjGroups', 'routeToIPObjGroups')
+            .innerJoin('routeToIPObjGroups.ipObjGroup', 'ipObjGroup')
+            .innerJoin('ipObjGroup.ipObjToIPObjGroups', 'ipObjToIPObjGroups', 'ipObjToIPObjGroups.ipobj = :ipobj', {ipobj: ipobj})
+            .innerJoin('table.firewall', 'firewall')
+            .leftJoin('firewall.cluster', 'cluster')
+            .where(`firewall.fwCloudId = :fwcloud`, {fwcloud: fwcloud})
+            .getRawMany();
+    };
+
+    public static async searchIpobjInGroupInRoutingRule(ipobj: number, fwcloud: number): Promise<any> {
+        return await getRepository(RoutingRule).createQueryBuilder('routing_rule')
+            .addSelect('firewall.id', 'firewall_id').addSelect('firewall.name', 'firewall_name')
+            .addSelect('cluster.id', 'cluster_id').addSelect('cluster.name', 'cluster_name')
+            .innerJoin('routing_rule.routingRuleToIPObjGroups', 'routingRuleToIPObjGroups')
+            .innerJoin('routingRuleToIPObjGroups.ipObjGroup', 'ipObjGroup')
+            .innerJoin('ipObjGroup.ipObjToIPObjGroups', 'ipObjToIPObjGroups', 'ipObjToIPObjGroups.ipobj = :ipobj', {ipobj: ipobj})
+            .innerJoin('routing_rule.routingTable', 'table')
+            .innerJoin('table.firewall', 'firewall')
+            .leftJoin('firewall.cluster', 'cluster')
+            .where(`firewall.fwCloudId = :fwcloud`, {fwcloud: fwcloud})
+            .getRawMany();
+    };
 
     //check if IPOBJ exists in and OpenVPN configuration 
     public static searchIpobjInOpenvpn(ipobj, type, fwcloud) {
@@ -1088,7 +1086,27 @@ export class IPObj extends Model {
         });
     };
 
-    //check if interface iupobj exists in and OpenVPN configuration 
+    //check if IPOBJ exists in and OpenVPN configuration 
+    public static addrInIfconfigPushOpenVPN(ipobj, fwcloud) {
+        return new Promise((resolve, reject) => {
+            db.get((error, connection) => {
+                if (error) return reject(error);
+
+                let sql = `SELECT VPN.id
+                    FROM openvpn AS VPN
+                    INNER JOIN openvpn_opt OPT on OPT.openvpn=VPN.id
+                    INNER JOIN firewall F on F.id=VPN.firewall
+                    inner JOIN fwcloud C on C.id=F.fwcloud
+                    WHERE OPT.ipobj=${ipobj} AND OPT.name='ifconfig-push' AND C.id=${fwcloud}`;
+                connection.query(sql, (error, rows) => {
+                    if (error) return reject(error);
+                    resolve(rows);
+                });
+            });
+        });
+    };
+
+    //check if interface ipobj exists in and OpenVPN configuration 
     public static searchIpobjInterfaceInOpenvpn(_interface, fwcloud, diff_firewall) {
         return new Promise((resolve, reject) => {
             db.get((error, connection) => {
@@ -1114,7 +1132,7 @@ export class IPObj extends Model {
         });
     };
 
-    //check if interface iupobj exists in and OpenVPN configuration 
+    //check if interface ipobj exists in and OpenVPN configuration 
     public static searchAddrHostInOpenvpn(dbCon, fwcloud, host) {
         return new Promise((resolve, reject) => {
             let sql = `SELECT VPN.*, CRT.cn,
@@ -1178,4 +1196,119 @@ export class IPObj extends Model {
         });
     };
 
+    // Search if IP without mask exists.
+    public static searchAddr(dbCon, fwcloud, addr): Promise<number> {        
+        return new Promise((resolve, reject) => {
+            let sql = `select id from ipobj 
+            where (fwcloud IS NULL OR fwcloud=${fwcloud}) AND address=${dbCon.escape(addr)} 
+            AND type=5 order by id asc`; // 5: ADDRESS
+
+            dbCon.query(sql, (error, rows) => {
+                if (error) return reject(error);
+                
+                resolve(rows.length === 0 ? 0 : rows[0].id);
+            });
+        });
+    };
+
+    // Search if IP with mask exists. (IP is given in CIDR notation) 
+    public static searchAddrWithMask(dbCon, fwcloud, addr, mask): Promise<number> {        
+        return new Promise((resolve, reject) => {
+            let sql = `select id,address,netmask from ipobj 
+            where (fwcloud IS NULL OR fwcloud=${fwcloud}) AND address=${dbCon.escape(addr)} 
+            AND (type=5 OR type=7) order by id asc`; // 5: ADDRESS, 7: NETWORK
+
+            dbCon.query(sql, (error, rows) => {
+                if (error) return reject(error);
+
+                // We have two formats for the netmask (for example, 255.255.255.0 or /24).
+                // We have to check if the object already exist independently of the netmask format.
+                const net1 = ip.cidrSubnet(`${addr}/${mask}`);
+                let net2: any = {};
+                for (let row of rows) {
+                    net2 = (row.netmask[0] === '/') ? ip.cidrSubnet(`${row.address}${row.netmask}`) : ip.subnet(row.address, row.netmask);
+                    if (net1.subnetMaskLength===net2.subnetMaskLength)
+                        resolve(row.id);
+                }
+
+                resolve(0);
+            });
+        });
+    };
+
+    // Search if IP with mask exists. (IP is given in CIDR notation) 
+    public static searchIPRange(dbCon, fwcloud, start, end) {        
+        return new Promise((resolve, reject) => {
+            let sql = `select id from ipobj where (fwcloud IS NULL OR fwcloud=${fwcloud}) 
+            AND range_start=${dbCon.escape(start)} AND range_end=${dbCon.escape(end)} AND type=6`; // 6: ADDRESS RANGE
+
+            dbCon.query(sql, (error, rows) => {
+                if (error) return reject(error);
+
+                resolve(rows.length === 0 ? 0 : rows[0].id);
+            });
+        });
+    };
+
+    // Search if IP protocol number exists. 
+    public static searchIPProtocolByNumber(dbCon, fwcloud, protocolNumber): Promise<string> {        
+        return new Promise((resolve, reject) => {
+            let sql = `select id from ipobj 
+            where (fwcloud IS NULL OR fwcloud=${fwcloud}) AND protocol=${protocolNumber} and type=1`; // 1: IP
+
+            dbCon.query(sql, (error, rows) => {
+                if (error) return reject(error);
+
+                resolve(rows.length === 0 ? '' : rows[0].id);
+            });
+        });
+    };
+
+    // Search if IP protocol name exists.
+    public static searchIPProtocolByName(dbCon, fwcloud, protocolName): Promise<string> {        
+        return new Promise((resolve, reject) => {
+            let sql = `select id from ipobj 
+            where (fwcloud IS NULL OR fwcloud=${fwcloud}) AND name=${dbCon.escape(protocolName)} and type=1`; // 1: IP
+
+            dbCon.query(sql, (error, rows) => {
+                if (error) return reject(error);
+
+                resolve(rows.length === 0 ? '' : rows[0].id);
+            });
+        });
+    };
+    
+    // Search for service port.
+    public static searchPort(dbCon, fwcloud, protocol, scrPorts, dstPorts, tcpFlags, tcpFlagsSet) {        
+        return new Promise((resolve, reject) => {
+            let sql = `select id from ipobj 
+            where (fwcloud IS NULL OR fwcloud=${fwcloud}) AND protocol=${protocol==='tcp' ? 6 : 17}
+            AND source_port_start=${scrPorts[0]} AND source_port_end=${scrPorts[1]}
+            AND destination_port_start=${dstPorts[0]} AND destination_port_end=${dstPorts[1]}`;
+
+            if (tcpFlags)
+                sql = `${sql} AND tcp_flags_mask=${tcpFlags} AND tcp_flags_settings=${tcpFlagsSet}`
+
+            dbCon.query(sql, (error, rows) => {
+                if (error) return reject(error);
+
+                resolve(rows.length === 0 ? 0 : rows[0].id)
+            });
+        });
+    };
+    
+    // Search for icmp service.
+    public static searchICMP(dbCon, fwcloud, type, code) {        
+        return new Promise((resolve, reject) => {
+            let sql = `select id from ipobj 
+            where (fwcloud IS NULL OR fwcloud=${fwcloud}) AND protocol=1 AND type=3
+            AND icmp_type=${type} AND icmp_code=${code}`;
+
+            dbCon.query(sql, (error, rows) => {
+                if (error) return reject(error);
+
+                resolve(rows.length === 0 ? 0 : rows[0].id)
+            });
+        });
+    };
 }

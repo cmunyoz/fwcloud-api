@@ -21,9 +21,11 @@
 */
 
 import Model from "../Model";
-import { PrimaryGeneratedColumn, Column, Entity, getRepository, ManyToOne, JoinColumn, OneToMany } from "typeorm";
+import { PrimaryGeneratedColumn, Column, Entity, getRepository, ManyToOne, JoinColumn, OneToMany, ManyToMany } from "typeorm";
 import { FwCloud } from "../fwcloud/FwCloud";
 import { PolicyRule } from "../policy/PolicyRule";
+import { RoutingRule } from "../routing/routing-rule/routing-rule.model";
+import { RoutingRuleToMark } from "../routing/routing-rule/routing-rule-to-mark.model";
 
 const fwcError = require('../../utils/error_table');
 
@@ -67,6 +69,9 @@ export class Mark extends Model {
 
     @OneToMany(type => PolicyRule, policyRule => policyRule.mark)
     policyRules: Array<PolicyRule>;
+
+    @OneToMany(() => RoutingRuleToMark, model => model.mark)
+    routingRuleToMarks: RoutingRuleToMark[];
 
     public getTableName(): string {
         return tableName;
@@ -135,14 +140,14 @@ export class Mark extends Model {
     public static searchMarkInRule(dbCon, fwcloud, mark) {
         return new Promise((resolve, reject) => {
             var sql = `select R.id as rule, R.firewall, FW.id as firewall_id, FW.name as firewall_name,
-	  M.id obj_id, M.name obj_name,
-	  R.id as rule_id, R.type rule_type, 30 as obj_type_id,
+	        M.id obj_id, M.name obj_name,
+	        R.id as rule_id, R.type rule_type, (select id from ipobj_type where id=30) as obj_type_id,
 			PT.name rule_type_name,
 			FW.cluster as cluster_id, IF(FW.cluster is null,null,(select name from cluster where id=FW.cluster)) as cluster_name
 		 	from policy_r R
 			inner join mark M on M.id=R.mark
 			inner join firewall FW on FW.id=R.firewall
-	  inner join policy_type PT on PT.id=R.type
+	        inner join policy_type PT on PT.id=R.type
 			where FW.fwcloud=${fwcloud} and R.mark=${mark}`;
             dbCon.query(sql, (error, rows) => {
                 if (error) return reject(error);
@@ -159,6 +164,17 @@ export class Mark extends Model {
                 search.restrictions = {};
 
                 search.restrictions.MarkInRule = await this.searchMarkInRule(dbCon, fwcloud, mark);
+
+                search.restrictions.MarkInRoutingRule = await getRepository(RoutingRule).createQueryBuilder('routing_rule')
+                    .addSelect('firewall.id', 'firewall_id').addSelect('firewall.name', 'firewall_name')
+                    .addSelect('cluster.id', 'cluster_id').addSelect('cluster.name', 'cluster_name')
+                    .innerJoin('routing_rule.routingRuleToMarks', 'routingRuleToMarks')
+                    .innerJoin('routingRuleToMarks.mark', 'mark', 'mark.id = :mark', {mark: mark})
+                    .innerJoin('routing_rule.routingTable', 'table')
+                    .innerJoin('table.firewall', 'firewall')
+                    .leftJoin('firewall.cluster', 'cluster')
+                    .where(`firewall.fwCloudId = :fwcloud`, {fwcloud: fwcloud})
+                    .getRawMany();
 
                 for (let key in search.restrictions) {
                     if (search.restrictions[key].length > 0) {

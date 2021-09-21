@@ -23,9 +23,8 @@
 
 import db from '../../database/database-manager';
 import Model from '../Model';
-import { Column, PrimaryColumn, Entity, Between, Not, Repository, OneToMany, JoinColumn, ManyToOne } from 'typeorm';
-import { PolicyCompilation } from './PolicyCompilation';
-import { app, logger } from '../../fonaments/abstract-application';
+import { Column, PrimaryColumn, Entity, JoinColumn, ManyToOne } from 'typeorm';
+import { logger } from '../../fonaments/abstract-application';
 import { PolicyRule } from './PolicyRule';
 import { Interface } from '../interface/Interface';
 import { PolicyPosition } from './PolicyPosition';
@@ -148,7 +147,10 @@ export class PolicyRuleToInterface extends Model {
                     connection.query('INSERT INTO ' + tableName + ' SET ?', policy_r__interfaceData, async (error, result) => {
                         if (error) return reject(error);
                         if (result.affectedRows > 0) {
-                            this.OrderList(policy_r__interfaceData.position_order, policy_r__interfaceData.rule, policy_r__interfaceData.position, 999999, policy_r__interfaceData.interface);
+                            try {
+                                await this.OrderList(policy_r__interfaceData.position_order, policy_r__interfaceData.rule, policy_r__interfaceData.position, 999999, policy_r__interfaceData.interface);
+                            } catch(err) { return reject(err) }
+                            
                             resolve();
                         } else reject(fwcError.NOT_FOUND);
                     });
@@ -237,7 +239,7 @@ export class PolicyRuleToInterface extends Model {
     };
 
     //Update policy_r__interface POSITION AND RULE
-    public static updatePolicy_r__interface_position(dbCon, idfirewall, rule, _interface, old_position, old_position_order, new_rule, new_position, new_order, callback) {
+    public static updatePolicy_r__interface_position(dbCon, idfirewall, rule, _interface, old_position, old_position_order, new_rule, new_position, new_order) {
         return new Promise((resolve, reject) => {
             //Check if IPOBJ TYPE is ALLOWED in this Position
             this.checkInterfacePosition(idfirewall, new_rule, _interface, new_position, (error, allowed) => {
@@ -656,6 +658,25 @@ export class PolicyRuleToInterface extends Model {
             });
         });
     };
+
+
+    public static interfaceAlreadyInRulePosition = (dbCon, fwcloud, firewall, rule, position, _interface) => {
+        return new Promise((resolve, reject) => {
+            let sql = `SELECT O.rule FROM ${tableName} O 
+                INNER JOIN policy_r R on R.id=O.rule
+                INNER JOIN firewall F on F.id=R.firewall
+                INNER JOIN fwcloud C on C.id=F.fwcloud
+                WHERE O.rule=${dbCon.escape(rule)} AND O.position=${dbCon.escape(position)} AND O.interface=${dbCon.escape(_interface)} 
+                AND F.id=${dbCon.escape(firewall)} AND C.id=${dbCon.escape(fwcloud)}`;
+
+            dbCon.query(sql, (error, rows) => {
+                if (error) return reject(error);
+                resolve(rows.length === 0 ? false : true);
+            });
+
+        });
+    };
+
 }
 
 

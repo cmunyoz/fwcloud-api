@@ -5,17 +5,90 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
-### Added
-- Default listen to localhost.
+### Fixed
+- Fixed 'After adding host to a group it is not possible move it to policy positions'.
+- Fixed 'Bug in firewall cluster node remove'.
+- Remove restrictions added for groups which are being used in policy rules.
+- Fixed 'Problem getting host information'
+- Disallow adding hosts without addresses to groups.
+- Adding/removing IPs from hosts used by firewalls updates firewall status flags
+- Changing mark name updates its node in the tree node
+- Changing the OpenVPN prefixes updates all nodes which reference to it
+- Changing mark settings updates firewalls status flags which use it
 
-### Fixed
+## [1.2.0] - 2021-04-30
+### Added
+- Hook scripts feature at the rule level. It allows to add shell script code before and/or after a policy rule load.
+- Extended the information displayed by the "where used" search feature. For example, if we use this feature over an OpenVPN, display the rules with groups that include OpenVPN prefixes that include this OpenVPN.
+- Include VPN connection status (enabled/disabled) in tree's nodes for the OpenVPN connections.
+- Additional info (TCP/UDP port and IPv4/IPv6 address) in tree's nodes.
+- Hundreds of new software tests for IPTables compiler.
+
+### Fixed
+- Error in interfaces discover feature in CentOS 7.
+- Set `MYSQL_PWD` environment variable for database password (mysqldump and mysql commands) instead of using it in command line.
+- In iptables-save import process lines like this `-A CHAIN.NAME -j RETURN`.
+- Detect FWCloud accounting rules in the iptables-save import procedure.
+- Bug removing a firewall cloud with OpenVPN in group (table openvpn__ipobj_g).
+- Restore related firewall, cluster and host information for objects in rules.
+- Bug in OpenVPN pending CCD files synchronization.
+- IPTables compiler error when using a service in the Translated `Service position` of a DNAT rule.
+- Performance improvements in `snapshot` import process.
+
+### Security
+- Updated npm module y18n from 3.2.1 to 3.2.2.
+
+
+## [1.1.0] - 2021-03-18
+### Added
+- Optimizations in API calls for policy and trees (firewalls, objects, services and CA) get. Around 10 times faster.
+- Huge improvement in IPTables compiler process. Nearly 40 times faster. 
+- Option for only sync the CCD files of the OpenVPN clients pending of install.
+- New API call `PUT /policy/rule/type/ingroup/get` for get only the firewall rules into a rules group, including the data about objects into rules positions.
+- New API call `PUT /policy/rule/type/grouped/get` for get firewall policy rules of one type but without getting data about objects into rules positions into rules groups. This is very useful for speed up policy load in FWCloud-UI.
+- Improved performance in the process for harvest information about each object in each rule position. It is now nearly 3 times faster.
+- Improve snapshots performance.
+- Improve backup and restore performance.
+- Header description in OpenVPN configuration files.
+- Configuration parameters for socket.io pingInterval and pingTimeout.
+- Send heartbeats through socket.io in FWCloud import/export operations.
+- For SSH connections detect if we are using the `root` user and don't use `sudo` in such cases.
+- Improve session check in socket.io connection establishment.
+- API call `PUT /ping`.
+- Improved SSH errors management.
+- Include rule metadata (color, group, group color, etc.) in the comment of rule compilation. Thanks to this it is possible to restore these metadata information when we import a FWCloud firewall using `iptables-save import feature`.
+- API call `PUT /iptables-save/import`: Import iptables-save data into an existing firewall.
+- API call `PUT /iptables-save/export`: Get iptables-save data exit from a FWCloud managed firewall.
+- Upgrade to Socket.IO v3. Upgraded npm module socket.io from 2.3.0 to 3.0.4.
+- By default listen to localhost.
+
+### Fixed
+- Remove standard objects when a fwcloud is removed.
+- Ignore maintenance mode for ping API requests.
+- Set the mysqldump node module format option to false for avoid long high CPU usage in backups of databases with lot of registers.
+- Multiport module, up to 15 ports limit control.
+- Bug in session expiration.
 - fwcloud-updater doesn't process update requests (for example, PUT /updates/ui) when all request headers are forwarded. Forward only the cookie header, required for the authentication middleware of the fwcloud-updater.
 - Log detailed information for websocket connection/disconnection.
 - Disable etag in express for avoid the problem explained in the http-application.ts file.
 - Bug in autodiscover when the `ip a` command returns interfaces with name like this one: `ens193.40@ens193:` In such cases the interface name must be the string preceding the `@` character.
 
+### Changed
+- Removed table policy_c and all the code that uses it.
+- Removed `mysqldump` and `mysql-import` node modules.
+- Set the maximum size of accepted data for BodyParser to 2MB.
+- Disable confirmation token for `PUT /ping` API call.
+- Clean firewall policy before iptables-save import.
+- Don't add comment in firewall rules generated by iptables-save import procedure.
+
+### Security
+- Updated npm module highlight.js from 9.18.0 to 9.18.5.
+- Updated npm module ini from 1.3.5 to 1.3.7.
+- Updated npm module axios from 0.21.0 to 0.21.1.
+
+
 ## [1.0.1] 
-### Added
+### Added
 - Log format for http.log.
 - Rename log file from 'fwcloud.log' to 'api.log'.
 - Unify log format with all other applications (fwcloud-updater and fwcloud-websrv) logs format.

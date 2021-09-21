@@ -23,17 +23,16 @@
 
 var express = require('express');
 var router = express.Router();
-import db from '../../database/database-manager';
-import { RepositoryService } from '../../database/repository.service';
 import { PolicyRule } from '../../models/policy/PolicyRule';
 import { PolicyRuleToIPObj } from '../../models/policy/PolicyRuleToIPObj';
 import { PolicyRuleToInterface } from '../../models/policy/PolicyRuleToInterface';
 import { PolicyRuleToOpenVPNPrefix } from '../../models/policy/PolicyRuleToOpenVPNPrefix';
-import { PolicyGroup } from '../../models/policy/PolicyGroup';
 import { PolicyPosition } from '../../models/policy/PolicyPosition';
 import { PolicyRuleToOpenVPN } from '../../models/policy/PolicyRuleToOpenVPN';
-import { In } from 'typeorm';
+import { In, getCustomRepository } from 'typeorm';
 import { logger } from '../../fonaments/abstract-application';
+import { PolicyRuleRepository } from '../../models/policy/policy-rule.repository';
+import { PolicyGroupRepository } from '../../repositories/PolicyGroupRepository'
 const app = require('../../fonaments/abstract-application').app;
 var utilsModel = require("../../utils/utils.js");
 const fwcError = require('../../utils/error_table');
@@ -56,7 +55,9 @@ async (req, res) => {
 		comment: req.body.comment,
 		type: req.body.type,
 		style: req.body.style,
-		fw_apply_to: req.body.fw_apply_to
+		fw_apply_to: req.body.fw_apply_to,
+		run_before: req.body.run_before,
+		run_after: req.body.run_after
 	};
 
 	try {
@@ -88,7 +89,9 @@ async (req, res) => {
 		style: req.body.style,
 		fw_apply_to: req.body.fw_apply_to,
 		options: req.body.options,
-		mark: (req.body.mark===0) ? null : req.body.mark
+		mark: (req.body.mark===0) ? null : req.body.mark,
+		run_before: req.body.run_before,
+		run_after: req.body.run_after
 	};
 
 	try {
@@ -108,28 +111,36 @@ async (req, res) => {
 		return res.status(400).json(error);
 	}
 
-	// Recompile rule.
-	var accessData = {
-		sessionID: req.sessionID,
-		iduser: req.session.user_id,
-		fwcloud: req.body.fwcloud,
-		idfirewall: req.body.firewall,
-		rule: policy_rData.id
-	};
-	PolicyRule.compilePolicy_r(accessData, (error, datac) => {
-		if (error) {
-			logger().error('Error updating a rule during compilation: ' + JSON.stringify(error));
-			return res.status(400).json(error);
-		}
-		res.status(200).json(datac);
-	});
+	res.status(204).end();
 });
 
 
 /* Get all policy_rs by firewall and type */
 router.put('/type/get', async (req, res) => {
 	try {
-		const policy = await PolicyRule.getPolicyData(req);
+		const policy = await PolicyRule.getPolicyData('grid', req.dbCon, req.body.fwcloud, req.body.firewall, req.body.type, null, null);
+		res.status(200).json(policy);
+	} catch(error) {
+		logger().error('Error finding a rule: ' + JSON.stringify(error));
+		res.status(400).json(error)
+	}
+});
+
+/* Get policy rules by firewall type and rules group */
+router.put('/type/ingroup/get', async (req, res) => {
+	try {
+		const policy = await PolicyRule.getPolicyData('grid', req.dbCon, req.body.fwcloud, req.body.firewall, req.body.type, null, req.body.idgroup);
+		res.status(200).json(policy);
+	} catch(error) {
+		logger().error('Error finding a rule: ' + JSON.stringify(error));
+		res.status(400).json(error)
+	}
+});
+
+/* Get all policy_rs by firewall and type but don't expand group contents */
+router.put('/type/grouped/get', async (req, res) => {
+	try {
+		const policy = await PolicyRule.getPolicyData('grid', req.dbCon, req.body.fwcloud, req.body.firewall, req.body.type, null, null, true);
 		res.status(200).json(policy);
 	} catch(error) {
 		logger().error('Error finding a rule: ' + JSON.stringify(error));
@@ -141,7 +152,7 @@ router.put('/type/get', async (req, res) => {
 /* Get all policy_rs by firewall and type and Rule */
 router.put('/get', async (req, res) => {
 	try {
-		const policy = await PolicyRule.getPolicyData(req);
+		const policy = await PolicyRule.getPolicyData('grid', req.dbCon, req.body.fwcloud, req.body.firewall, req.body.type, [req.body.rule], null);
 		//If exists policy_r get data
 		if (policy && policy.length > 0) 
 			res.status(200).json(policy[0]);
@@ -157,7 +168,7 @@ router.put('/get', async (req, res) => {
 /* Get all policy_rs by firewall and type and Rule */
 router.put('/full/get', async (req, res) => {
 	try { 
-		const data = await PolicyRule.getPolicyDataDetailed(req.body.fwcloud, req.body.firewall, req.body.type, req.body.rule);
+		const data = await PolicyRule.getPolicyData('grid', req.dbCon, req.body.fwcloud, req.body.firewall, req.body.type, [req.body.rule], null);
 		if (data && data.length > 0) 
 			res.status(200).json(data);
 		else
@@ -190,12 +201,12 @@ async (req, res) => {
 router.put('/active',
 utilsModel.disableFirewallCompileStatus,
 async (req, res) => {
-	const policyRuleRepository = (await app().getService(RepositoryService.name)).for(PolicyRule);
+	const policyRuleRepository = getCustomRepository(PolicyRuleRepository);
 	rules = await policyRuleRepository.find({
 		where: {
 			id: In(req.body.rulesIds),
 			firewallId: req.body.firewall,
-			type: req.body.type,
+			policyTypeId: req.body.type
 		}
 	});
 	const active = req.body.active !== 1 ? 0 : req.body.active;
@@ -214,7 +225,7 @@ async (req, res) => {
 router.put('/style',
 utilsModel.disableFirewallCompileStatus,
 async (req, res) => {
-	const policyRuleRepository = (await app().getService(RepositoryService.name)).for(PolicyRule);
+	const policyRuleRepository = getCustomRepository(PolicyRuleRepository);
 	var style = req.body.style;
 	var policyRules = await policyRuleRepository.find({where: {id: In(req.body.rulesIds)}});
 
@@ -250,7 +261,7 @@ async (req, res) => {
 	try {
 		let pasteOnRuleId = req.body.pasteOnRuleId;
 
-		// The rule over wich we move cuted rules can not be part of the moved rules.
+		// The rule over which we move cat rules can not be part of the moved rules.
 		for (let rule of req.body.rulesIds)
 			if (rule === pasteOnRuleId) throw(fwcError.other('Paste on rule can not be part of the set of pasted rules.'));
 
@@ -292,7 +303,6 @@ async (req, res) => {
 
 		// Recompile the rule.
 		var accessData = { sessionID: req.sessionID, iduser: req.session.user_id, fwcloud: req.body.fwcloud, idfirewall: req.body.firewall, rule: req.body.rule };
-		PolicyRule.compilePolicy_r(accessData, (error, datac) => {});
 
 		res.status(204).end();
 	} catch(error) { 
@@ -332,7 +342,12 @@ function ruleCopy(dbCon, firewall, rule, pasteOnRuleId, pasteOffset) {
 				options: copyRule.options,
 				comment: copyRule.comment,
 				type: copyRule.type,
-				style: copyRule.style
+				style: copyRule.style,
+				fw_apply_to: copyRule.fw_apply_to,
+				negate: copyRule.negate,
+				mark: copyRule.mark,
+				run_before: copyRule.run_before,
+				run_after: copyRule.run_after
 			};
 			newRuleId = await PolicyRule.insertPolicy_r(policy_rData);
 
@@ -351,7 +366,6 @@ function ruleCopy(dbCon, firewall, rule, pasteOnRuleId, pasteOffset) {
 }
 
 async function ruleMove(dbCon, firewall, rule, pasteOnRuleId, pasteOffset) {
-	const repository = await app().getService(RepositoryService.name);
 	return new Promise(async (resolve, reject) => {
 		try {
 			// Get rule data of rule over which we are running the move action (up or down of this rule).
@@ -380,11 +394,12 @@ async function ruleMove(dbCon, firewall, rule, pasteOnRuleId, pasteOffset) {
 			};
 			await PolicyRule.updatePolicy_r(dbCon, policy_rData);
 			
+
 			// If we have moved rule from a group, if the group is empty remove de rules group from the database.
 			if (pasteOffset!=0 && moveRule.idgroup) {
-				const policyGroup = await repository.for(PolicyGroup).findOne(moveRule.idgroup);
+				const policyGroup = await getCustomRepository(PolicyGroupRepository).findOne(moveRule.idgroup);
 				if (policyGroup) {
-					await repository.for(PolicyGroup).deleteIfEmpty(policyGroup);
+					await getCustomRepository(PolicyGroupRepository).deleteIfEmpty(policyGroup);
 				}
 			}
 

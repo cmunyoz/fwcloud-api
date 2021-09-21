@@ -48,12 +48,16 @@ schema.validate = req => {
 				type: sharedSch.policy_type.optional(),
 				style: sharedSch.style.optional(),
 				fw_apply_to: sharedSch.id.allow(null).optional(),
-				mark: sharedSch.mark_id.allow(null).optional()
+				mark: sharedSch.mark_id.allow(null).optional(),
+				run_before: sharedSch.script_code.optional(),
+				run_after: sharedSch.script_code.optional()
 			});
 			if (req.method === 'PUT') schema = schema.append({ rule: sharedSch.id });
 		} else if (req.method === 'PUT') {
-			if (req.url === '/policy/rule/type/get')
+			if (req.url === '/policy/rule/type/get' || req.url === '/policy/rule/type/grouped/get')
 				schema = schema.append({ type: sharedSch.policy_type });
+			else if (req.url === '/policy/rule/type/ingroup/get')
+				schema = schema.append({ type: sharedSch.policy_type, idgroup: sharedSch.id });
 			else if (req.url === '/policy/rule/get')
 				schema = schema.append({ type: sharedSch.policy_type, rule: sharedSch.id });
 			else if (req.url === '/policy/rule/position/negate' || req.url === '/policy/rule/position/allow')

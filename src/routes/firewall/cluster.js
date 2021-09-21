@@ -68,11 +68,12 @@ var utilsModel = require("../../utils/utils.js");
 
 import { Tree } from '../../models/tree/Tree';
 import { PolicyRule } from '../../models/policy/PolicyRule';
-import { PolicyCompilation } from '../../models/policy/PolicyCompilation';
 import { Firewall } from '../../models/firewall/Firewall';
 import { Interface } from '../../models/interface/Interface';
-import { logger } from '../../fonaments/abstract-application';
+import { app, logger } from '../../fonaments/abstract-application';
 import { PgpHelper } from '../../utils/pgp';
+import { FirewallService } from '../../models/firewall/firewall.service';
+import { ClusterService } from '../../models/firewall/cluster.service';
 
 const restrictedCheck = require('../../middleware/restricted');
 const fwcError = require('../../utils/error_table');
@@ -419,7 +420,6 @@ router.put('/', async (req, res) => {
 
 	try {
 		const masterFirewallID = await Firewall.getMasterFirewallId(clusterData.fwcloud, clusterData.id);
-		await PolicyCompilation.deleteFullFirewallPolicy_c(req.dbCon,masterFirewallID);
 		await Cluster.updateCluster(req.dbCon, req.body.fwcloud, clusterData);
 
 		// If this a stateful cluster verify that the stateful special rules exists.
@@ -589,6 +589,8 @@ router.put('/clone', (req, res) => {
 						let dataI = await Interface.cloneFirewallInterfaces(iduser, fwcloud, oldFirewall, idNewFirewall);
 						await PolicyRule.cloneFirewallPolicy(req.dbCon, oldFirewall, idNewFirewall, dataI);
 						await utilsModel.createFirewallDataDir(fwcloud, idNewFirewall);
+						const firewallService = await app().getService(FirewallService.name);
+						await firewallService.clone(oldFirewall, fwNewMaster, dataI);
 					}
 				}
 
@@ -618,7 +620,9 @@ router.put("/del",
 restrictedCheck.firewall,
 async (req, res) => {
 	try {
-		await Cluster.deleteCluster(req.dbCon, req.body.cluster, req.session.user_id, req.body.fwcloud);
+		const clusterService = await app().getService(ClusterService.name);
+		await clusterService.remove(req.body.cluster, req.body.fwcloud, req.session.user_id);
+
 		res.status(204).end();
 	} catch(error) {
 		logger().error('Error deleting cluster: ' + JSON.stringify(error));

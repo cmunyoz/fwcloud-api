@@ -42,8 +42,9 @@ import { DatabaseImporter } from "../fwcloud-exporter/database-importer/database
 import { SnapshotService } from "./snapshot.service";
 import { BackupService } from "../backups/backup.service";
 import { EventEmitter } from "typeorm/platform/PlatformTools";
-import { getCustomRepository, Migration } from "typeorm";
+import { getCustomRepository, getRepository, Migration } from "typeorm";
 import { DatabaseService } from "../database/database.service";
+import * as crypto from 'crypto';
 
 export type SnapshotMetadata = {
     timestamp: number,
@@ -51,7 +52,10 @@ export type SnapshotMetadata = {
     comment: string,
     version: string,
     migrations: string[];
+    hash: string;
 };
+
+export const snapshotDigestContent: string = 'FWCloud';
 
 export class Snapshot implements Responsable {
 
@@ -69,6 +73,7 @@ export class Snapshot implements Responsable {
     protected _comment: string;
     protected _fwCloud: FwCloud;
     protected _version: string;
+    protected _hash: string;
 
     protected _compatible: boolean;
 
@@ -92,6 +97,7 @@ export class Snapshot implements Responsable {
         this._version = null;
         this._data = null;
         this._compatible = false;
+        this._hash = null;
     }
 
     get name(): string {
@@ -138,6 +144,19 @@ export class Snapshot implements Responsable {
         return this._migrations;
     }
 
+    public isHashCompatible(): boolean {
+        //Backwards compatibility. Snapshot might not have hash defined
+        if (this._hash === undefined) {
+            return false;
+        }
+
+        const digestedHash: string = crypto.createHmac('sha256', app().config.get('crypt.secret'))
+            .update(snapshotDigestContent)
+            .digest('hex');
+
+        return digestedHash === this._hash;
+    }
+
     /**
      * Create a backup using promises
      * 
@@ -166,19 +185,19 @@ export class Snapshot implements Responsable {
         await progress.procedure('Restoring snapshot', (task: Task) => {
             task.addTask(async () => {
                 const backupService: BackupService = await app().getService<BackupService>(BackupService.name);
-                return backupService.create('Before snapshot (' + this.id + ') creation (beta)'); 
-            }, 'Backup created (only on beta)')
+                return backupService.create('Before snapshot (' + this.id + ') restore');
+            }, 'Backup created')
             task.addTask(async () => { 
-                this._restoredFwCloud = await this.restoreDatabaseData();
-            }, 'FwCloud restored from snapshot');
+                this._restoredFwCloud = await this.restoreDatabaseData(eventEmitter);
+            }, 'FWCloud restored from snapshot');
             task.parallel((task: Task) => {
                 task.addTask(() => { return this.resetCompiledStatus(); }, 'Firewalls compilation flags reset');
                 task.addTask(() => { 
                     return this.migrateSnapshots(this.fwCloud, this._restoredFwCloud);
                 }, 'Snapshots migrated');
             });
-            task.addTask(() => { return this.removeDatabaseData(); }, 'Deprecated FwCloud removed');
-        }, 'FwCloud snapshot restored');
+            task.addTask(() => { return this._fwCloud.remove(); }, 'Deprecated FWCloud removed');
+        }, 'FWCloud snapshot restored');
 
         return this._restoredFwCloud;
     }
@@ -210,6 +229,7 @@ export class Snapshot implements Responsable {
         this._exists = true;
         this._compatible = this.checkCompatibility(this._migrations, executedMigrations.map(migration => migration.name));
         this._data = new ExporterResult(JSON.parse(dataContent));
+        this._hash = snapshotMetadata.hash ?? undefined;
         
         return this;
     }
@@ -277,6 +297,9 @@ export class Snapshot implements Responsable {
         this._migrations = executedMigrations.map((migration: Migration) => {
             return migration.name;
         });
+        this._hash = crypto.createHmac('sha256', app().config.get('crypt.secret'))
+            .update(snapshotDigestContent)
+            .digest('hex');
         
         if (FSHelper.directoryExistsSync(this._path)) {
             throw new Error('Snapshot with id = ' + this._id + ' already exists');
@@ -289,8 +312,8 @@ export class Snapshot implements Responsable {
 
         await progress.procedure('Creating snapshot', (task: Task) => {
             task.parallel((task: Task) => {
-                task.addTask(() => { return this.copyFwCloudDataDirectories(); }, 'FwCloud data directories exported');
-                task.addTask(() => { return this.saveDataFile(); }, 'FwCloud database exported');
+                task.addTask(() => { return this.copyFwCloudDataDirectories(); }, 'FWCloud data directories exported');
+                task.addTask(() => { return this.saveDataFile(); }, 'FWCloud database exported');
             });
         }, 'Snapshot created');
 
@@ -303,28 +326,18 @@ export class Snapshot implements Responsable {
     }
 
     /**
-     * Removes all data related with the fwcloud from the database
-     */
-    protected async removeDatabaseData(): Promise<void> {
-        const data: ExporterResult = await this.exportFwCloudDatabaseData();
-
-        return new BulkDatabaseDelete(data.getAll()).run();
-    }
-
-    /**
      * Restore all snapshot data into the database
      */
-    protected async restoreDatabaseData(): Promise<FwCloud> {
-        const importer: DatabaseImporter = new DatabaseImporter();
+    protected async restoreDatabaseData(eventEmitter: EventEmitter = new EventEmitter()): Promise<FwCloud> {
+        const importer: DatabaseImporter = new DatabaseImporter(eventEmitter);
         
         const fwCloud: FwCloud = await importer.import(this);
 
         const oldFwCloud: FwCloud = await FwCloud.findOne(this.fwCloud.id, {relations: ['users']});
 
         fwCloud.users = oldFwCloud.users;
-        oldFwCloud.users = [];
-        await FwCloud.save([fwCloud, oldFwCloud]);
-        
+        await FwCloud.save([fwCloud]);
+
         return fwCloud;
     }
 
@@ -358,7 +371,8 @@ export class Snapshot implements Responsable {
             name: this._name,
             comment: this._comment,
             version: this._version,
-            migrations: this._migrations
+            migrations: this._migrations,
+            hash: this._hash
         };
 
         fs.writeFileSync(path.join(this._path, Snapshot.METADATA_FILENAME), JSON.stringify(metadata, null, 2));

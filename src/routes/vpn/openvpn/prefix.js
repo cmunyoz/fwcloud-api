@@ -24,8 +24,10 @@
 var express = require('express');
 var router = express.Router();
 import { OpenVPNPrefix } from '../../../models/vpn/openvpn/OpenVPNPrefix';
-import { PolicyCompilation } from '../../../models/policy/PolicyCompilation';
-import { logger } from '../../../fonaments/abstract-application';
+import { Firewall } from '../../../models/firewall/Firewall';
+import { OpenVPN } from '../../../models/vpn/openvpn/OpenVPN';
+import { app, logger } from '../../../fonaments/abstract-application';
+import { OpenVPNPrefixService } from '../../../models/vpn/openvpn/openvpn-prefix.service';
 const restrictedCheck = require('../../../middleware/restricted');
 const fwcError = require('../../../utils/error_table');
 
@@ -62,29 +64,15 @@ router.post('/', async (req, res) => {
  */
 router.put('/', async (req, res) => {
 	try {
-		// Verify that the new prefix name doesn't already exists.
-		req.body.ca = req.prefix.ca;
-		if (await OpenVPNPrefix.existsPrefix(req.dbCon,req.prefix.openvpn,req.body.name))
-			throw fwcError.ALREADY_EXISTS;
+		
+		const openVPNPrefixService = await app().getService(OpenVPNPrefixService.name);
+		await openVPNPrefixService.update(req);
+		
+		var data_return = {};
+		await Firewall.getFirewallStatusNotZero(req.body.fwcloud, data_return);
+		await OpenVPN.getOpenvpnStatusNotZero(req, data_return);
 
-		// If we modify a prefix used in a rule or group, and the new prefix name has no openvpn clients, then don't allow it.
-		const search = await OpenVPNPrefix.searchPrefixUsage(req.dbCon,req.body.fwcloud,req.body.prefix);
-		if (search.result && (await OpenVPNPrefix.getOpenvpnClientesUnderPrefix(req.dbCon,req.prefix.openvpn,req.body.name)).length < 1)
-			throw fwcError.IPOBJ_EMPTY_CONTAINER;
-
-		// Invalidate the compilation of the rules that use this prefix.
-		await PolicyCompilation.deleteRulesCompilation(req.body.fwcloud,search.restrictions.PrefixInRule);
-
-		// Invalidate the compilation of the rules that use a group that use this prefix.
-		await PolicyCompilation.deleteGroupsInRulesCompilation(req.dbCon,req.body.fwcloud,search.restrictions.PrefixInGroup);
-
-   	// Modify the prefix name.
-		await OpenVPNPrefix.modifyPrefix(req);
-
-		// Apply the new CRT prefix container.
-		await OpenVPNPrefix.applyOpenVPNPrefixes(req.dbCon, req.body.fwcloud, req.prefix.openvpn);
-
-		res.status(204).end();
+		res.status(204).json(data_return);
 	} catch(error) {
 		logger().error('Error updating a prefix: ' + JSON.stringify(error));
 		res.status(400).json(error);
@@ -132,7 +120,7 @@ router.put('/restricted', restrictedCheck.openvpn_prefix, (req, res) => res.stat
 
 router.put('/where', async (req, res) => {
 	try {
-		const data = await OpenVPNPrefix.searchPrefixUsage(req.dbCon,req.body.fwcloud,req.body.prefix);
+		const data = await OpenVPNPrefix.searchPrefixUsage(req.dbCon, req.body.fwcloud, req.body.prefix, true);
 		if (data.result)
 			res.status(200).json(data);
 		else

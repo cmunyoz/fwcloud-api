@@ -22,9 +22,7 @@
 
 import { TableTerraformer, TerraformHandlerCollection } from "../table-terraformer";
 import { ImportMapping } from "../mapper/import-mapping";
-import { QueryRunner } from "typeorm";
 import { IPObjType } from "../../../../models/ipobj/IPObjType";
-import { app } from "../../../../fonaments/abstract-application";
 import { Firewall } from "../../../../models/firewall/Firewall";
 import { Ca } from "../../../../models/vpn/pki/Ca";
 import { Cluster } from "../../../../models/firewall/Cluster";
@@ -37,10 +35,11 @@ import { IPObjGroup } from "../../../../models/ipobj/IPObjGroup";
 import { Mark } from "../../../../models/ipobj/Mark";
 import { CaPrefix } from "../../../../models/vpn/pki/CaPrefix";
 import { OpenVPNPrefix } from "../../../../models/vpn/openvpn/OpenVPNPrefix";
+import { EventEmitter } from "typeorm/platform/PlatformTools";
+import { RoutingRule } from "../../../../models/routing/routing-rule/routing-rule.model";
+import { RoutingTable } from "../../../../models/routing/routing-table/routing-table.model";
 
 export class FwcTreeTerraformer extends TableTerraformer {
-    public ipObjTypes: Array<IPObjType>;
-
     protected _typeToTableNameMapping: {[type: string]: typeof Model} = {
         'CA': Ca,
         'CL': Cluster,
@@ -83,19 +82,22 @@ export class FwcTreeTerraformer extends TableTerraformer {
         'PO6': Firewall,
         'PRE': CaPrefix,
         'PRO': OpenVPNPrefix,
-        'RR': null,
         'SOC': null,
         'SOG': IPObjGroup,
         'SOI': IPObj,
         'SOM': IPObj,
         'SOT': IPObj,
         'SOU': IPObj,
-        'STD': null
+        'STD': null,
+
+        'ROU': Firewall,
+        'RTS': Firewall,
+        'RT': RoutingTable,
+        'RR': Firewall
     }
 
-    public static async make(mapper: ImportMapping, queryRunner: QueryRunner): Promise<FwcTreeTerraformer> {
-        const terraformer: FwcTreeTerraformer = new FwcTreeTerraformer(mapper);
-        terraformer.ipObjTypes = await IPObjType.find();
+    public static async make(mapper: ImportMapping, eventEmitter: EventEmitter = new EventEmitter()): Promise<FwcTreeTerraformer> {
+        const terraformer: FwcTreeTerraformer = new FwcTreeTerraformer(mapper, eventEmitter);
         return terraformer;
     }
 

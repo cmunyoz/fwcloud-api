@@ -34,6 +34,7 @@ import { HttpException } from "../../exceptions/http/http-exception";
 import { getFWCloudMetadata } from "../../../metadata/metadata";
 import { HTTPApplication } from "../../http-application";
 import { CLIApplication } from "../../cli-application";
+import { ClassConstructor } from "class-transformer";
 
 export type HttpMethod = "ALL" | "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS" | "HEAD";
 export type ArgumentTypes<F extends Function> = F extends (...args: infer A) => any ? A : never;
@@ -192,12 +193,23 @@ export class RouterService extends Service {
     }
 
     public async validateInput(route: Route, request: Request): Promise<void> {
-        const validations = getFWCloudMetadata.validations[route.controllerSignature.controller.name + '@' + route.controllerSignature.method];
+
+        // These routes are already validated with the Joi middleware.
+        if (route.pathParams === "/iptables-save/import" || route.pathParams === "/iptables-save/export")
+            return;
+
+        const validationDto: ClassConstructor<object> = getFWCloudMetadata.validations[route.controllerSignature.controller.name + '@' + route.controllerSignature.method];
         
-        if (!validations) {
+        if (validationDto === undefined) {
             throw new HttpException(`Request ${route.pathParams} not validated`, 501);
         }
 
-        await ((new Validator(request.inputs.all(), validations)).validate());
+        await ((new Validator(request.inputs.all(), validationDto)).validate());
+
+        const validationQueryDto: ClassConstructor<object> = getFWCloudMetadata.queryValidation[route.controllerSignature.controller.name + '@' + route.controllerSignature.method];
+
+        if (validationQueryDto) {
+            await ((new Validator(request.query, validationQueryDto)).validate({ enableImplicitConversion: true }));
+        }
     }
 }

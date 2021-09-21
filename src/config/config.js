@@ -135,11 +135,11 @@ const config = convict({
       env: 'SESSION_FORCE_HTTPS',
       default: true
     },
-    expire: {
-      doc: 'Expiration seconds for the session cookie.',
+    keepalive_ms: {
+      doc: 'Amount of milliseconds that a session can remain active without any request.',
       format: 'duration',
-      env: 'SESSION_EXPIRE',
-      default: 900
+      env: 'SESSION_KEEPALIVE_MS',
+      default: 900*1000
     },
     files_path: {
       doc: 'Directory for the session cookies store.',
@@ -231,6 +231,13 @@ const config = convict({
       format: String,
       default: 'src/database/migrations',
       env: 'TYPEORM_MIGRATION_DIR'
+    },
+    mysqldump: {
+      protocol: {
+        doc: 'mysqldump connection protocol',
+        format: ['tcp', 'socket'],
+        default: 'socket',
+      }
     }
   },
 
@@ -282,7 +289,7 @@ const config = convict({
       env: 'POLICY_SCRIPT_NAME'
     },
     script_dir: {
-      doc: 'Directory in wich the script will be installed in the destinatior firewall',
+      doc: 'Destination directory for the FWCloud script.',
       format: String,
       default: '/etc/fwcloud/',
       env: 'POLICY_SCRIPT_DIR'
@@ -455,8 +462,24 @@ const config = convict({
       default: 'https://localhost:3132',
       env: 'FWC_UPDATER_URL'
     },
-  }
+  },
 
+  // socket.io 
+  socket_io: {
+    pingInterval: {
+      doc: 'How many ms before sending a new ping packet.',
+      format: Number,
+      default: 600000,
+      env: 'SOCKET_IO_PING_INTERVAL'
+    },
+    pingTimeout: {
+      doc: 'How many ms without a pong packet to consider the connection closed.',
+      format: Number,
+      default: 300000,
+      env: 'SOCKET_IO_PING_TIMEOUT'
+    },
+  }
+  
 });
 
 

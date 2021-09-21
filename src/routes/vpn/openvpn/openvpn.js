@@ -55,10 +55,8 @@ var router = express.Router();
  * @type ../../models/vpn/openvpn
  */
 
-import { PolicyRuleToOpenVPN } from '../../../models/policy/PolicyRuleToOpenVPN';
 import { Crt } from '../../../models/vpn/pki/Crt';
 import { OpenVPNPrefix } from '../../../models/vpn/openvpn/OpenVPNPrefix';
-import { PolicyCompilation } from '../../../models/policy/PolicyCompilation';
 import { OpenVPN } from '../../../models/vpn/openvpn/OpenVPN';
 import { Tree } from '../../../models/tree/Tree';
 const restrictedCheck = require('../../../middleware/restricted');
@@ -66,6 +64,8 @@ import { IPObj } from '../../../models/ipobj/IPObj';
 import { Channel } from '../../../sockets/channels/channel';
 import { ProgressPayload } from '../../../sockets/messages/socket-message';
 import { logger } from '../../../fonaments/abstract-application';
+import { Firewall } from '../../../models/firewall/Firewall';
+import { Cluster } from '../../../models/firewall/Cluster';
 const fwcError = require('../../../utils/error_table');
 
 
@@ -99,12 +99,12 @@ router.post('/', async(req, res) => {
 		if (req.crt.type===1 && req.body.firewall!==req.openvpn.firewall) 
 			throw {'msg': 'Firewall ID for the new client OpenVPN configuration must match server OpenVPN configuration'};
 
-		const cfg = await OpenVPN.addCfg(req);
+		const newOpenvpn = await OpenVPN.addCfg(req);
 
 		// Now create all the options for the OpenVPN configuration.
 		var order = 1;
 		for (let opt of req.body.options) {
-			opt.openvpn = cfg;
+			opt.openvpn = newOpenvpn;
 			opt.order = order++;
 			await OpenVPN.addCfgOpt(req, opt);
 		}
@@ -112,25 +112,21 @@ router.post('/', async(req, res) => {
 		// Create the OpenVPN configuration node in the tree.
 		let nodeId;
 		if (req.tree_node.node_type === 'OPN') // This will be an OpenVPN server configuration.
-			nodeId = await Tree.newNode(req.dbCon, req.body.fwcloud, req.crt.cn, req.body.node_id, 'OSR', cfg, 312);
+			nodeId = await Tree.newNode(req.dbCon, req.body.fwcloud, req.crt.cn, req.body.node_id, 'OSR', newOpenvpn, 312);
 		else if (req.tree_node.node_type === 'OSR') { // This will be an OpenVPN client configuration.
 			//nodeId = await fwc_treeModel.newNode(req.dbCon, req.body.fwcloud, req.crt.cn, req.body.node_id, 'OCL', cfg, 311);
 			await OpenVPNPrefix.applyOpenVPNPrefixes(req.dbCon,req.body.fwcloud,req.body.openvpn);
+
+			// Update the compilation status of all the firewalls that use the VPN Prefixes to which this new OpenVPN
+			// connection will belong.
+			await OpenVPNPrefix.updateOpenvpnClientPrefixesFWStatus(req.dbCon, req.body.fwcloud, newOpenvpn);
 		}
-
-		// Invalidate the compilation of the rules that use a prefix that use this new OpenVPN configuration.
-		let rules = await PolicyRuleToOpenVPN.searchOpenvpnInPrefixInRule(req.dbCon,req.body.fwcloud,cfg);
-		await PolicyCompilation.deleteRulesCompilation(req.body.fwcloud,rules);
-
-		// Invalidate the compilation of the rules that use a group that contains a prefix that use this new OpenVPN configuration.
-		let groups = await PolicyRuleToOpenVPN.searchOpenvpnInPrefixInGroup(req.dbCon,req.body.fwcloud,cfg);
-		await PolicyCompilation.deleteGroupsInRulesCompilation(req.dbCon,req.body.fwcloud,groups);
 
 		// If we are creaing an OpenVPN server configuration, then create the VPN virtual network interface with its assigned IP.
 		if (req.crt.type===2) // 1=Client certificate, 2=Server certificate.
-			await OpenVPN.createOpenvpnServerInterface(req,cfg);
+			await OpenVPN.createOpenvpnServerInterface(req,newOpenvpn);
 
-		res.status(200).json({insertId: cfg, TreeinsertId: nodeId});
+		res.status(200).json({insertId: newOpenvpn, TreeinsertId: nodeId});
 	} catch(error) {
 		logger().error('Error creating a new openvpn: ' + JSON.stringify(error));
 		res.status(400).json(error);
@@ -143,18 +139,6 @@ router.post('/', async(req, res) => {
  */
 router.put('/', async(req, res) => {
 	try {
-		// Invalidate the compilation of the rules using this OpenVPN configuration.
-		let rules = await PolicyRuleToOpenVPN.searchOpenvpnInRule(req.dbCon,req.body.fwcloud,req.body.openvpn);
-		// Invalidate the compilation of the rules that use a prefix that use this OpenVPN configuration.
-		rules = rules.concat(await PolicyRuleToOpenVPN.searchOpenvpnInPrefixInRule(req.dbCon,req.body.fwcloud,req.body.openvpn));
-		await PolicyCompilation.deleteRulesCompilation(req.body.fwcloud,rules);
-		
-		// Invalidate the compilation of the rules that use a group that use this OpenVPN configuration.
-		let groups = await PolicyRuleToOpenVPN.searchOpenvpnInGroup(req.dbCon,req.body.fwcloud,req.body.openvpn);
-		// Invalidate the compilation of the rules that use a group that contains a prefix that use this OpenVPN configuration.
-		groups = groups.concat(await PolicyRuleToOpenVPN.searchOpenvpnInPrefixInGroup(req.dbCon,req.body.fwcloud,req.body.openvpn));
-		await PolicyCompilation.deleteGroupsInRulesCompilation(req.dbCon, req.body.fwcloud,groups);
-
 		await OpenVPN.updateCfg(req);
 
 		// First remove all the current configuration options.
@@ -275,13 +259,9 @@ router.put('/del',
 restrictedCheck.openvpn,
 async(req, res) => {
 	try {
-		// Invalidate the compilation of the rules that use a prefix that use this removed OpenVPN configuration.
-		let rules = await PolicyRuleToOpenVPN.searchOpenvpnInPrefixInRule(req.dbCon,req.body.fwcloud,req.body.openvpn);
-		await PolicyCompilation.deleteRulesCompilation(req.body.fwcloud,rules);
-
-		// Invalidate the compilation of the rules that use a group that contains a prefix that use this removed OpenVPN configuration.
-		let groups = await PolicyRuleToOpenVPN.searchOpenvpnInPrefixInGroup(req.dbCon,req.body.fwcloud,req.body.openvpn);
-		await PolicyCompilation.deleteGroupsInRulesCompilation(req.dbCon,req.body.fwcloud,groups);
+		// Update the compilation status of all the firewalls that use the VPN Prefixes to which this OpenVPN
+		// connection belongs. It must be done before the OpenVPN deletion.
+		if (req.openvpn.type === 1) await OpenVPNPrefix.updateOpenvpnClientPrefixesFWStatus(req.dbCon, req.body.fwcloud, req.body.openvpn);
 		
 		// Delete the configuration from de database.
 		await OpenVPN.delCfg(req.dbCon, req.body.fwcloud, req.body.openvpn);
@@ -290,6 +270,7 @@ async(req, res) => {
 			// Regenerate the tree under the OpenVPN server to which the client OpenVPN configuration belongs.
 			// This is necesary for avoid empty prefixes if we remove all the OpenVPN client configurations for a prefix.
 			await OpenVPNPrefix.applyOpenVPNPrefixes(req.dbCon,req.body.fwcloud,req.openvpn.openvpn);
+
 		} else { // Server OpenVPN configuration.
 			// Delete the openvpn node from the tree.
 			await Tree.deleteObjFromTree(req.body.fwcloud, req.body.openvpn, 312);
@@ -308,7 +289,7 @@ router.put('/restricted', restrictedCheck.openvpn, (req, res) => res.status(204)
 
 router.put('/where', async (req, res) => {
 	try {
-		const data = await OpenVPN.searchOpenvpnUsage(req.dbCon,req.body.fwcloud,req.body.openvpn);
+		const data = await OpenVPN.searchOpenvpnUsage(req.dbCon, req.body.fwcloud, req.body.openvpn, true);
     if (data.result > 0)
       res.status(200).json(data);
     else
@@ -355,7 +336,10 @@ router.put('/install', async(req, res) => {
 		res.status(200).send();
 	} catch(error) { 
 		logger().error('Error installing openvpn: ' + JSON.stringify(error));
-		res.status(400).json(error);
+		if (error.message)
+			res.status(400).json({message: error.message});
+		else
+			res.status(400).json(error);
 	}
 });
 
@@ -391,7 +375,10 @@ router.put('/uninstall', async(req, res) => {
 		res.status(200).send().end();
 	} catch(error) { 
 		logger().error('Error uninstalling openvpn: ' + JSON.stringify(error));
-		res.status(400).json(error);
+		if (error.message)
+			res.status(400).json({message: error.message});
+		else
+			res.status(400).json(error);
 	}
 });
 
@@ -419,12 +406,18 @@ router.put('/ccdsync', async(req, res) => {
 		// Get all client configurations for this OpenVPN server configuration.
 		const clients = await OpenVPN.getOpenvpnClients(req.dbCon,req.body.openvpn);
 
+		const cluster = await Firewall.getClusterId(req.dbCon, req.body.firewall);
+		let lastClusterNodeId = cluster ? await Firewall.getLastClusterNodeId(req.dbCon, cluster) : null;
+
 		for (let client of clients) {
+			if (req.body.onlyPending && client.status===0) continue; // Only synchronize CCD files of pending OpenVPN client configs.
+
 			let cfgDump = await OpenVPN.dumpCfg(req.dbCon,req.body.fwcloud,client.id);
 			await OpenVPN.installCfg(req,cfgDump.ccd,client_config_dir,client.cn,1, channel);
 
 			// Update the status flag for the OpenVPN configuration.
-			await OpenVPN.updateOpenvpnStatus(req.dbCon,client.id,"&~1");
+			if (!cluster || req.body.firewall===lastClusterNodeId) // In a cluster update only if this is the last cluster node.
+				await OpenVPN.updateOpenvpnStatus(req.dbCon,client.id,"&~1");
 		}
 
 		// Get the list of files into the client-config-dir directory.
@@ -436,7 +429,10 @@ router.put('/ccdsync', async(req, res) => {
 		res.status(200).send().end();
 	} catch(error) {
 		logger().error('Error sync openvpn: ' + JSON.stringify(error));
-		res.status(400).json(error);
+		if (error.message)
+			res.status(400).json({message: error.message});
+		else
+			res.status(400).json(error);
 	}
 });
 
@@ -460,7 +456,10 @@ router.put('/status/get', async(req, res) => {
 		res.status(200).json(data);
 	} catch(error) { 
 		logger().error('Error getting openvpn log file: ' + JSON.stringify(error));
-		res.status(400).json(error);
+		if (error.message)
+			res.status(400).json({message: error.message});
+		else
+			res.status(400).json(error);
 	}
 });
 

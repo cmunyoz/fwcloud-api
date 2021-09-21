@@ -53,7 +53,7 @@ var router = express.Router();
  * @property PolicyScript
  * @type ../../models/compile/
  */
-import { PolicyScript } from '../../compiler/PolicyScript';
+import { PolicyScript } from '../../compiler/policy/PolicyScript';
 import { Firewall } from '../../models/firewall/Firewall';
 import { Channel } from '../../sockets/channels/channel';
 import { ProgressPayload } from '../../sockets/messages/socket-message';
@@ -74,8 +74,11 @@ router.post('/', async (req, res) => {
     channel.emit('message', new ProgressPayload('end', false, 'Firewall installed'));
 		res.status(204).end();
 	} catch(error) {
-    logger().error('Error installing policies: ' + JSON.stringify(error));
-    res.status(400).json(error);
+    logger().error(`Installing policy script${error.message ? ': '+error.message : JSON.stringify(error)}`);
+    if (error.message)
+      res.status(400).json({message: error.message});
+    else
+      res.status(400).json(error);
   }
 });
 /*----------------------------------------------------------------------------------------------------------------------*/

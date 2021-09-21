@@ -45,6 +45,8 @@ sharedSchema.cn = Joi.string().regex(/^[a-zA-Z0-9\-_\.]{1,64}$/);
 sharedSchema.name = Joi.string().regex(/^[ -~\x80-\xFE]{1,64}$/);
 sharedSchema.comment = Joi.string().allow('').allow(null).regex(/^[\x09-\x0D -~\x80-\xFE]{1,254}$/).optional();
 
+sharedSchema.script_code = Joi.string().allow('').allow(null).regex(/^[\x09-\x0D -~\x80-\xFE]{1,65535}$/).optional();
+
 sharedSchema.img = Joi.string().allow('').allow(null).dataUri().min(3).max(64);
 
 sharedSchema.style = Joi.string().allow('').allow(null).max(50);
@@ -54,13 +56,15 @@ sharedSchema._0_1 = Joi.number().integer().valid([0, 1]);
 sharedSchema.linux_user = Joi.string().regex(/^[a-zA-Z_]([a-zA-Z0-9_-]{0,31}|[a-zA-Z0-9_-]{0,30}\$)$/);
 sharedSchema.linux_pass = Joi.string().regex(/^[ -~\x80-\xFE]{2,64}$/);
 
-sharedSchema.linux_path = Joi.string().regex(/^\/{1}(((\/{1}\.{1})?[a-zA-Z0-9 ]+\/?)+(\.{1}[a-zA-Z0-9]{2,4})?)$/);
+sharedSchema.linux_path = Joi.string().regex(/^\/{1}(((\/{1}\.{1})?[a-zA-Z0-9 -_]+\/?)+(\.{1}[a-zA-Z0-9]{2,4})?)$/);
 
 sharedSchema.mac_addr = Joi.string().regex(/^([0-9A-Fa-f]{2}[:-]){5}([0-9A-Fa-f]{2})$/);
 
 sharedSchema.interface_type = Joi.number().integer().valid([10, 11]);
 sharedSchema.group_type = Joi.number().integer().valid([20, 21]);
 sharedSchema.policy_type = Joi.number().integer().valid([1,2,3,4,5,6,61,62,63,64,65]);
+
+sharedSchema.policy_compiler = Joi.string().valid(['IPTables','NFTables']);
 
 sharedSchema.ipv4 = Joi.string().ip({ version: ['ipv4'], cidr: 'forbidden' });
 sharedSchema.ipv4_netmask_cidr = Joi.string().regex(/^(\/([0-9]|[1-2][0-9]|3[0-2]))$/);

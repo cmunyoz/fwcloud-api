@@ -26,7 +26,6 @@ var router = express.Router();
 import { PolicyRuleToInterface } from '../../models/policy/PolicyRuleToInterface';
 import { PolicyRuleToIPObj } from '../../models/policy/PolicyRuleToIPObj';
 import { PolicyRule } from '../../models/policy/PolicyRule';
-import { PolicyCompilation } from '../../models/policy/PolicyCompilation';
 import { Firewall } from '../../models/firewall/Firewall';
 import { logger } from '../../fonaments/abstract-application';
 const fwcError = require('../../utils/error_table');
@@ -47,7 +46,6 @@ async (req, res) => {
 
 	try {
 		await PolicyRuleToInterface.insertPolicy_r__interface(req.body.firewall, policy_r__interfaceData);
-		PolicyRule.compilePolicy_r(policy_r__interfaceData.rule, (error, datac) => {});
 		res.status(204).end();
 	} catch(error) {
 			logger().error('Error creating new policy_r__interface: ' + JSON.stringify(error));
@@ -70,9 +68,6 @@ async(req, res) => {
 	var firewall = req.body.firewall;
 
 	try {
-		// Invalidate compilation of the affected rules.
-		await PolicyCompilation.deletePolicy_c(rule);
-		if (rule != new_rule) await PolicyCompilation.deletePolicy_c(new_rule);
 		await Firewall.updateFirewallStatus(req.body.fwcloud,firewall,"|3");
 
 		// Get positions content.
@@ -103,9 +98,6 @@ async(req, res) => {
 		return res.status(400).json(error); 
 	}
 
-	PolicyRule.compilePolicy_r(rule, (error, datac) => {});
-	if (rule != new_rule) PolicyRule.compilePolicy_r(new_rule, (error, datac) => {});
-
 	res.status(204).end();
 });
 
@@ -127,7 +119,6 @@ utilsModel.disableFirewallCompileStatus,
 		}
 		//If saved policy_r__interface saved ok, get data
 		if (data && data.result) {
-			PolicyRule.compilePolicy_r(rule, (error, datac) => {});
 			res.status(200).json(data);
 		} else {
 			logger().error('Error updating order: ' + JSON.stringify(error));
@@ -149,7 +140,6 @@ async (req, res) => {
 
 	try {
 		await PolicyRuleToInterface.deletePolicy_r__interface(req.dbCon, rule, interface, position, old_order);
-		PolicyRule.compilePolicy_r(rule, (error, datac) => {});
 		// If after the delete we have empty rule positions, then remove them from the negate position list.
 		await PolicyRule.allowEmptyRulePositions(req);
 		res.status(204).end();

@@ -198,7 +198,7 @@ router.put('/', (req, res) => {
 				try {
 					await InterfaceIPObj.UpdateHOST(interfaceData.id);
 
-					await Firewall.updateFirewallStatusIPOBJ(req.body.fwcloud, -1, -1, interfaceData.id, interfaceData.type, "|3");
+					await Firewall.updateFirewallStatusInterface(req.body.fwcloud, [interfaceData.id]);
 
 					var data_return = {};
 					await Firewall.getFirewallStatusNotZero(req.body.fwcloud, data_return);
@@ -282,13 +282,16 @@ router.put('/autodiscover', async(req, res) => {
 		}
 		const rawData = await Firewall.getInterfacesData(SSHconn);
 		
-		// Proces raw interfaces data and convert into a json object.
+		// Process raw interfaces data and convert into a json object.
 		const ifsData = await Interface.ifsDataToJson(rawData);
 
 		res.status(200).json(ifsData);
 	} catch(error) {
 		logger().error('Error getting network interface information: ' + JSON.stringify(error));
-		res.status(400).json(error);
+		if (error.message)
+			res.status(400).json({message: error.message});
+		else
+			res.status(400).json(error);
 	}
 });
 

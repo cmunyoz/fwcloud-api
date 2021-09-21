@@ -24,7 +24,7 @@ import Model from "../../Model";
 import { Firewall } from '../../../models/firewall/Firewall';
 import { PolicyRuleToOpenVPN } from '../../../models/policy/PolicyRuleToOpenVPN';
 import { Interface } from '../../../models/interface/Interface';
-import { PrimaryGeneratedColumn, Column, Entity, OneToOne, ManyToOne, JoinColumn, OneToMany, ManyToMany, JoinTable } from "typeorm";
+import { PrimaryGeneratedColumn, Column, Entity, OneToOne, ManyToOne, JoinColumn, OneToMany, ManyToMany, JoinTable, getRepository } from "typeorm";
 const config = require('../../../config/config');
 import { IPObj } from '../../ipobj/IPObj';
 const readline = require('readline');
@@ -32,11 +32,15 @@ import { Tree } from '../../../models/tree/Tree';
 import { Crt } from "../pki/Crt";
 import { OpenVPNOption } from "./openvpn-option.model";
 import { IPObjGroup } from "../../ipobj/IPObjGroup";
-const sshTools = require('../../../utils/ssh');
+import sshTools from '../../../utils/ssh';
 import { OpenVPNPrefix } from "./OpenVPNPrefix";
 import { ProgressInfoPayload, ProgressErrorPayload, ProgressNoticePayload, ProgressWarningPayload } from "../../../sockets/messages/socket-message";
 import { Channel } from "../../../sockets/channels/channel";
 import { EventEmitter } from "events";
+import { RoutingRule } from "../../routing/routing-rule/routing-rule.model";
+import { Route } from "../../routing/route/route.model";
+import { RouteToOpenVPN } from "../../routing/route/route-to-openvpn.model";
+import { RoutingRuleToOpenVPN } from "../../routing/routing-rule/routing-rule-to-openvpn.model";
 const fwcError = require('../../../utils/error_table');
 const fs = require('fs');
 const ip = require('ip');
@@ -127,6 +131,12 @@ export class OpenVPN extends Model {
     @OneToMany(type => OpenVPNPrefix, model => model.openVPN)
     openVPNPrefixes: Array<OpenVPNPrefix>;
 
+    @OneToMany(() => RoutingRuleToOpenVPN, model => model.openVPN)
+    routingRuleToOpenVPNs: RoutingRuleToOpenVPN[];
+
+    @OneToMany(() => RouteToOpenVPN, model => model.openVPN)
+    routeToOpenVPNs: RouteToOpenVPN[];
+
 
     public getTableName(): string {
         return tableName;
@@ -154,9 +164,9 @@ export class OpenVPN extends Model {
     public static updateCfg(req) {
         return new Promise((resolve, reject) => {
             let sql = `UPDATE ${tableName} SET install_dir=${req.dbCon.escape(req.body.install_dir)},
-      install_name=${req.dbCon.escape(req.body.install_name)},
-      comment=${req.dbCon.escape(req.body.comment)}
-      WHERE id=${req.body.openvpn}`
+                install_name=${req.dbCon.escape(req.body.install_name)},
+                comment=${req.dbCon.escape(req.body.comment)}
+                WHERE id=${req.body.openvpn}`
             req.dbCon.query(sql, (error, result) => {
                 if (error) return reject(error);
                 resolve();
@@ -187,8 +197,8 @@ export class OpenVPN extends Model {
         return new Promise((resolve, reject) => {
             // Get all the ipobj referenced by this OpenVPN configuration.
             let sql = `select OBJ.id,OBJ.type from openvpn_opt OPT
-      inner join ipobj OBJ on OBJ.id=OPT.ipobj
-      where OPT.openvpn=${openvpn} and OPT.name!='remote'`;
+                inner join ipobj OBJ on OBJ.id=OPT.ipobj
+                where OPT.openvpn=${openvpn} and OPT.name!='remote'`;
             dbCon.query(sql, (error, ipobj_list) => {
                 if (error) return reject(error);
 
@@ -225,8 +235,8 @@ export class OpenVPN extends Model {
             // IMPORTANT: Order by CRT type for remove clients before servers. If we don't do it this way, 
             // and the OpenVPN server is removed first, we will get a database foreign key constraint fails error.
             let sql = `select VPN.id,CRT.type from ${tableName} VPN
-      inner join crt CRT on CRT.id=VPN.crt
-      where VPN.firewall=${firewall} order by CRT.type asc`;
+                inner join crt CRT on CRT.id=VPN.crt
+                where VPN.firewall=${firewall} order by CRT.type asc`;
             dbCon.query(sql, async (error, result) => {
                 if (error) return reject(error);
 
@@ -309,9 +319,9 @@ export class OpenVPN extends Model {
     // Get data of an OpenVPN server clients.
     public static getOpenvpnClients(dbCon, openvpn) {
         return new Promise((resolve, reject) => {
-            let sql = `select VPN.id,CRT.cn from openvpn VPN 
-      inner join crt CRT on CRT.id=VPN.crt
-      where openvpn=${openvpn}`;
+            let sql = `select VPN.id,CRT.cn,VPN.status from openvpn VPN 
+                inner join crt CRT on CRT.id=VPN.crt
+                where openvpn=${openvpn}`;
             dbCon.query(sql, (error, result) => {
                 if (error) return reject(error);
                 resolve(result);
@@ -337,18 +347,21 @@ export class OpenVPN extends Model {
     public static getOpenvpnInfo(dbCon, fwcloud, openvpn, type) {
         return new Promise((resolve, reject) => {
             let sql = `select VPN.*, FW.fwcloud, FW.id firewall_id, FW.name firewall_name, CRT.cn, CA.cn as CA_cn, O.address, FW.cluster cluster_id,
-      IF(FW.cluster is null,null,(select name from cluster where id=FW.cluster)) as cluster_name,
-      IF(VPN.openvpn is null,VPN.openvpn,(select crt.cn from openvpn inner join crt on crt.id=openvpn.crt where openvpn.id=VPN.openvpn)) as openvpn_server_cn
-      ${(type === 2) ? `,O.netmask` : ``}, ${(type === 1) ? `311` : `312`} as type
-      from openvpn VPN 
-      inner join crt CRT on CRT.id=VPN.crt
-      inner join ca CA on CA.id=CRT.ca
-      inner join firewall FW on FW.id=VPN.firewall
-      inner join openvpn_opt OPT on OPT.openvpn=${openvpn}
-      inner join ipobj O on O.id=OPT.ipobj
-      where FW.fwcloud=${fwcloud} and VPN.id=${openvpn} ${(type === 1) ? `and OPT.name='ifconfig-push'` : ``}`;
+                IF(FW.cluster is null,null,(select name from cluster where id=FW.cluster)) as cluster_name,
+                IF(VPN.openvpn is null,VPN.openvpn,(select crt.cn from openvpn inner join crt on crt.id=openvpn.crt where openvpn.id=VPN.openvpn)) as openvpn_server_cn
+                ${(type === 2) ? `,O.netmask` : ``}
+                from openvpn VPN 
+                inner join crt CRT on CRT.id=VPN.crt
+                inner join ca CA on CA.id=CRT.ca
+                inner join firewall FW on FW.id=VPN.firewall
+                inner join openvpn_opt OPT on OPT.openvpn=${openvpn}
+                inner join ipobj O on O.id=OPT.ipobj
+                where FW.fwcloud=${fwcloud} and VPN.id=${openvpn} ${(type === 1) ? `and OPT.name='ifconfig-push'` : ``}`;
             dbCon.query(sql, (error, result) => {
                 if (error) return reject(error);
+                for(let i=0; i<result.length; i++) {
+                    result[i].type = (type === 1) ? 311 : 312;
+                }
                 resolve(result);
             });
         });
@@ -357,9 +370,9 @@ export class OpenVPN extends Model {
     public static getOpenvpnServersByCloud(dbCon, fwcloud) {
         return new Promise((resolve, reject) => {
             let sql = `select VPN.id,CRT.cn from openvpn VPN 
-      inner join crt CRT on CRT.id=VPN.crt
-      inner join ca CA on CA.id=CRT.ca
-      where CA.fwcloud=${fwcloud} and CRT.type=2`; // 2 = Server certificate.
+                inner join crt CRT on CRT.id=VPN.crt
+                inner join ca CA on CA.id=CRT.ca
+                where CA.fwcloud=${fwcloud} and CRT.type=2`; // 2 = Server certificate.
             dbCon.query(sql, (error, result) => {
                 if (error) return reject(error);
                 resolve(result);
@@ -370,9 +383,13 @@ export class OpenVPN extends Model {
     public static dumpCfg(dbCon, fwcloud, openvpn) {
         return new Promise((resolve, reject) => {
             // First obtain the CN of the certificate.
-            let sql = `select CRT.cn,CRT.ca,CRT.type from crt CRT
-      INNER JOIN openvpn VPN ON CRT.id=VPN.crt
-			WHERE VPN.id=${openvpn}`;
+            let sql = `select CRT.cn, CRT.ca, CRT.type, FW.name as fw_name, CL.name as cl_name,
+                VPN.install_name as srv_config1, VPNSRV.install_name as srv_config2 from crt CRT
+                INNER JOIN openvpn VPN ON VPN.crt=CRT.id
+                LEFT JOIN openvpn VPNSRV ON VPNSRV.id=VPN.openvpn
+                INNER JOIN firewall FW ON FW.id=VPN.firewall
+                LEFT JOIN cluster CL ON CL.id=FW.cluster
+			    WHERE VPN.id=${openvpn}`;
 
             dbCon.query(sql, (error, result) => {
                 if (error) return reject(error);
@@ -383,6 +400,16 @@ export class OpenVPN extends Model {
                 const key_path = ca_dir + 'private/' + result[0].cn + '.key';
                 let dh_path = (result[0].type === 2) ? ca_dir + 'dh.pem' : '';
 
+                // Header description.
+                let des = "# FWCloud.net - Developed by SOLTECSIS (https://soltecsis.com)\n" 
+                des += `# Generated: ${Date()}\n`;
+                des += `# Certificate Common Name: ${result[0].cn} \n`;
+                des += result[0].cl_name ? `# Firewall Cluster: ${result[0].cl_name}\n` : `# Firewall: ${result[0].fw_name}\n`;
+                if (result[0].srv_config1 && result[0].srv_config1.endsWith('.conf')) result[0].srv_config1 = result[0].srv_config1.slice(0, -5);
+                if (result[0].srv_config2 && result[0].srv_config2.endsWith('.conf')) result[0].srv_config2 = result[0].srv_config2.slice(0, -5);
+                des += `# OpenVPN Server: ${result[0].srv_config1 ? result[0].srv_config1 : result[0].srv_config2}\n`;
+                des += `# Type: ${result[0].srv_config1 ? 'Server' : 'Client'}\n\n`;
+
                 // Get all the configuration options.
                 sql = `select name,ipobj,arg,scope,comment from openvpn_opt where openvpn=${openvpn} order by openvpn_opt.order`;
                 dbCon.query(sql, async (error, result) => {
@@ -390,8 +417,8 @@ export class OpenVPN extends Model {
 
                     try {
                         // Generate the OpenVPN config file.
-                        var ovpn_cfg = '';
-                        var ovpn_ccd = '';
+                        let ovpn_cfg = des;
+                        let ovpn_ccd = '';
 
                         // First add all the configuration options.
                         for (let opt of result) {
@@ -454,26 +481,28 @@ export class OpenVPN extends Model {
                 
                 await sshTools.uploadStringToFile(fwData.SSHconn, cfg, name);
 
+                const sudo = fwData.SSHconn.username === 'root' ? '' : 'sudo';
+
                 const existsDir = await sshTools.runCommand(fwData.SSHconn, `if [ -d "${dir}" ]; then echo -n 1; else echo -n 0; fi`);
                 if (existsDir === "0") {
                     channel.emit('message', new ProgressNoticePayload(`Creating install directory.\n`));
-                    await sshTools.runCommand(fwData.SSHconn, `sudo mkdir "${dir}"`);
-                    await sshTools.runCommand(fwData.SSHconn, `sudo chown root:root "${dir}"`);
-                    await sshTools.runCommand(fwData.SSHconn, `sudo chmod 755 "${dir}"`);
+                    await sshTools.runCommand(fwData.SSHconn, `${sudo} mkdir "${dir}"`);
+                    await sshTools.runCommand(fwData.SSHconn, `${sudo} chown root:root "${dir}"`);
+                    await sshTools.runCommand(fwData.SSHconn, `${sudo} chmod 755 "${dir}"`);
                 }
 
                 channel.emit('message', new ProgressNoticePayload(`Installing OpenVPN configuration file.\n`));
-                await sshTools.runCommand(fwData.SSHconn, `sudo mv ${name} ${dir}/`);
+                await sshTools.runCommand(fwData.SSHconn, `${sudo} mv ${name} ${dir}/`);
 
                 channel.emit('message', new ProgressNoticePayload(`Setting up file permissions.\n\n`));
-                await sshTools.runCommand(fwData.SSHconn, `sudo chown root:root ${dir}/${name}`);
+                await sshTools.runCommand(fwData.SSHconn, `${sudo} chown root:root ${dir}/${name}`);
 
                 if (type === 1) { 
                     // Client certificate.
-                    await sshTools.runCommand(fwData.SSHconn, `sudo chmod 644 ${dir}/${name}`);
+                    await sshTools.runCommand(fwData.SSHconn, `${sudo} chmod 644 ${dir}/${name}`);
                 } else {
                     // Server certificate.
-                    await sshTools.runCommand(fwData.SSHconn, `sudo chmod 600 ${dir}/${name}`);
+                    await sshTools.runCommand(fwData.SSHconn, `${sudo} chmod 600 ${dir}/${name}`);
                 }
 
                 resolve();
@@ -490,7 +519,8 @@ export class OpenVPN extends Model {
                 const fwData: any = await Firewall.getFirewallSSH(req);
 
                 channel.emit('message', new ProgressNoticePayload(`Removing OpenVPN configuration file '${dir}/${name}' from: (${fwData.SSHconn.host})\n`));
-                await sshTools.runCommand(fwData.SSHconn, `sudo rm -f "${dir}/${name}"`);
+                const sudo = fwData.SSHconn.username === 'root' ? '' : 'sudo';
+                await sshTools.runCommand(fwData.SSHconn, `${sudo} rm -f "${dir}/${name}"`);
 
                 resolve();
             } catch (error) {
@@ -559,10 +589,10 @@ export class OpenVPN extends Model {
     public static updateOpenvpnStatusIPOBJ(req, ipobj, status_action) {
         return new Promise((resolve, reject) => {
             var sql = `UPDATE openvpn VPN
-      INNER JOIN openvpn_opt OPT ON OPT.openvpn=VPN.id
-      INNER JOIN ipobj O ON O.id=OPT.ipobj
-      SET VPN.status=VPN.status${status_action}
-      WHERE O.fwcloud=${req.body.fwcloud} AND O.id=${ipobj}`;
+                INNER JOIN openvpn_opt OPT ON OPT.openvpn=VPN.id
+                INNER JOIN ipobj O ON O.id=OPT.ipobj
+                SET VPN.status=VPN.status${status_action}
+                WHERE O.fwcloud=${req.body.fwcloud} AND O.id=${ipobj}`;
             req.dbCon.query(sql, (error, result) => {
                 if (error) return reject(error);
                 resolve();
@@ -616,7 +646,7 @@ export class OpenVPN extends Model {
         });
     };
 
-    public static searchOpenvpnUsage(dbCon, fwcloud, openvpn) {
+    public static searchOpenvpnUsage(dbCon: any, fwcloud: number, openvpn: number, extendedSearch?: boolean) {
         return new Promise(async (resolve, reject) => {
             try {
                 let search: any = {};
@@ -633,6 +663,31 @@ export class OpenVPN extends Model {
                 search.restrictions.LastOpenvpnInPrefixInRule = await PolicyRuleToOpenVPN.searchLastOpenvpnInPrefixInRule(dbCon, fwcloud, openvpn);
                 search.restrictions.LastOpenvpnInPrefixInGroup = await PolicyRuleToOpenVPN.searchLastOpenvpnInPrefixInGroup(dbCon, fwcloud, openvpn);
 
+                search.restrictions.OpenVPNInRoute = await this.searchOpenVPNInRoute(fwcloud, openvpn);
+                search.restrictions.OpenVPNInGroupInRoute = await this.searchOpenVPNInGroupInRoute(fwcloud, openvpn);
+                search.restrictions.OpenVPNInRoutingRule = await this.searchOpenVPNInRoutingRule(fwcloud, openvpn);
+                search.restrictions.OpenVPNInGroupInRoutingRule = await this.searchOpenVPNInGroupInRoutingRule(fwcloud, openvpn);
+                
+                if (extendedSearch) {
+                    // Include the rules that use the groups in which the OpenVPN is being used.
+                    search.restrictions.OpenvpnInGroupInRule = [];
+                    for (let i=0; i<search.restrictions.OpenvpnInGroup.length; i++) {
+                        const data: any = await IPObjGroup.searchGroupUsage(search.restrictions.OpenvpnInGroup[i].group_id, fwcloud);
+                        search.restrictions.OpenvpnInGroupInRule.push(...data.restrictions.GroupInRule);
+                    }
+
+                    // Include the rules that use prefixes in which the OpenVPN is being used, including the
+                    // groups (used in rules) in which these prefixes are being used.
+                    const prefixes = await OpenVPNPrefix.getOpenvpnClientPrefixes(dbCon, openvpn);
+                    search.restrictions.OpenvpnInPrefixInRule = [];
+                    search.restrictions.OpenvpnInPrefixInGroupInRule = [];
+                    for (let i=0; i<prefixes.length; i++) {
+                        const data: any = await OpenVPNPrefix.searchPrefixUsage(dbCon, fwcloud, prefixes[i].id, true);
+                        search.restrictions.OpenvpnInPrefixInRule.push(...data.restrictions.PrefixInRule);
+                        search.restrictions.OpenvpnInPrefixInGroupInRule.push(...data.restrictions.PrefixInGroupInRule);
+                    }
+                }
+
                 for (let key in search.restrictions) {
                     if (search.restrictions[key].length > 0) {
                         search.result = true;
@@ -643,6 +698,60 @@ export class OpenVPN extends Model {
             } catch (error) { reject(error) }
         });
     };
+
+    public static async searchOpenVPNInRoute(fwcloud: number, openvpn: number): Promise<any> {
+        return await getRepository(Route).createQueryBuilder('route')
+            .addSelect('firewall.id', 'firewall_id').addSelect('firewall.name', 'firewall_name')
+            .addSelect('cluster.id', 'cluster_id').addSelect('cluster.name', 'cluster_name')
+            .innerJoin('route.routeToOpenVPNs', 'routeToOpenVPNs')
+            .innerJoin('routeToOpenVPNs.openVPN', 'openvpn', 'openvpn.id = :openvpn', {openvpn: openvpn})
+            .innerJoinAndSelect('route.routingTable', 'table')
+            .innerJoin('table.firewall', 'firewall')
+            .leftJoin('firewall.cluster', 'cluster')
+            .where(`firewall.fwCloudId = :fwcloud`, {fwcloud: fwcloud})
+            .getRawMany();
+    }
+
+    public static async searchOpenVPNInRoutingRule(fwcloud: number, openvpn: number): Promise<any> {
+        return await getRepository(RoutingRule).createQueryBuilder('routing_rule')
+            .addSelect('firewall.id', 'firewall_id').addSelect('firewall.name', 'firewall_name')
+            .addSelect('cluster.id', 'cluster_id').addSelect('cluster.name', 'cluster_name')
+            .innerJoin('routing_rule.routingRuleToOpenVPNs', 'routingRuleToOpenVPNs')
+            .innerJoin('routingRuleToOpenVPNs.openVPN', 'openvpn', 'openvpn.id = :openvpn', {openvpn: openvpn})
+            .innerJoinAndSelect('routing_rule.routingTable', 'table')
+            .innerJoin('table.firewall', 'firewall')
+            .leftJoin('firewall.cluster', 'cluster')
+            .where(`firewall.fwCloudId = :fwcloud`, {fwcloud: fwcloud})
+            .getRawMany();
+    }
+
+    public static async searchOpenVPNInGroupInRoute(fwcloud: number, openvpn: number): Promise<any> {
+        return await getRepository(Route).createQueryBuilder('route')
+            .addSelect('firewall.id', 'firewall_id').addSelect('firewall.name', 'firewall_name')
+            .addSelect('cluster.id', 'cluster_id').addSelect('cluster.name', 'cluster_name')
+            .innerJoinAndSelect('route.routingTable', 'table')
+            .innerJoin('route.routeToIPObjGroups', 'routeToIPObjGroups')
+            .innerJoin('routeToIPObjGroups.ipObjGroup', 'ipObjGroup')
+            .innerJoin('ipObjGroup.openVPNs', 'openvpn', 'openvpn.id = :openvpn', {openvpn: openvpn})
+            .innerJoin('table.firewall', 'firewall')
+            .leftJoin('firewall.cluster', 'cluster')
+            .where(`firewall.fwCloudId = :fwcloud`, {fwcloud: fwcloud})
+            .getRawMany();
+    }
+
+    public static async searchOpenVPNInGroupInRoutingRule(fwcloud: number, openvpn: number): Promise<any> {
+        return await getRepository(RoutingRule).createQueryBuilder('routing_rule')
+            .addSelect('firewall.id', 'firewall_id').addSelect('firewall.name', 'firewall_name')
+            .addSelect('cluster.id', 'cluster_id').addSelect('cluster.name', 'cluster_name')
+            .innerJoin('routing_rule.routingRuleToIPObjGroups', 'routingRuleToIPObjGroups')
+            .innerJoin('routingRuleToIPObjGroups.ipObjGroup', 'ipObjGroup')
+            .innerJoin('ipObjGroup.openVPNs', 'openvpn', 'openvpn.id = :openvpn', {openvpn: openvpn})
+            .innerJoin('routing_rule.routingTable', 'table')
+            .innerJoin('table.firewall', 'firewall')
+            .leftJoin('firewall.cluster', 'cluster')
+            .where(`firewall.fwCloudId = :fwcloud`, {fwcloud: fwcloud})
+            .getRawMany();
+    }
 
     public static searchOpenvpnUsageOutOfThisFirewall(req) {
         return new Promise((resolve, reject) => {
@@ -655,25 +764,25 @@ export class OpenVPN extends Model {
                 let answer: any = {};
                 answer.restrictions = {};
                 answer.restrictions.OpenvpnInRule = [];
+                answer.restrictions.OpenVPNInRoute = [];
+                answer.restrictions.OpenVPNInRoutingRule = [];
                 answer.restrictions.OpenvpnInGroup = [];
 
                 try {
                     for (let openvpn of result) {
                         const data: any = await this.searchOpenvpnUsage(req.dbCon, req.body.fwcloud, openvpn.id);
                         if (data.result) {
-                            // OpenVPN config found in rules of other firewall.
-                            if (data.restrictions.OpenvpnInRule.length > 0) {
-                                for (let rule of data.restrictions.OpenvpnInRule) {
-                                    if (rule.firewall_id != req.body.firewall)
-                                        answer.restrictions.OpenvpnInRule.push(rule);
-                                }
-                            }
-
-                            // OpenVPN config found in a group.
-                            if (data.restrictions.OpenvpnInGroup.length > 0)
-                                answer.restrictions.OpenvpnInGroup = answer.restrictions.OpenvpnInGroup.concat(data.restrictions.OpenvpnInGroup);
+                            answer.restrictions.OpenvpnInRule = answer.restrictions.OpenvpnInRule.concat(data.restrictions.OpenvpnInRule);
+                            answer.restrictions.OpenVPNInRoute = answer.restrictions.OpenVPNInRoute.concat(data.restrictions.OpenVPNInRoute);
+                            answer.restrictions.OpenVPNInRoutingRule = answer.restrictions.OpenVPNInRoutingRule.concat(data.restrictions.OpenVPNInRoutingRule);
+                            answer.restrictions.OpenvpnInGroup = answer.restrictions.OpenvpnInGroup.concat(data.restrictions.OpenvpnInGroup);
                         }
                     }
+
+                    // Remove items of this firewall.
+                    answer.restrictions.OpenvpnInRule = answer.restrictions.OpenvpnInRule.filter(item => item.firewall_id != req.body.firewall);
+                    answer.restrictions.OpenVPNInRoute = answer.restrictions.OpenVPNInRoute.filter(item => item.firewall_id != req.body.firewall);
+                    answer.restrictions.OpenVPNInRoutingRule = answer.restrictions.OpenVPNInRoutingRule.filter(item => item.firewall_id != req.body.firewall);
                 } catch (error) { reject(error) }
 
                 resolve(answer);
@@ -685,8 +794,8 @@ export class OpenVPN extends Model {
     public static searchOpenvpnChild(dbCon, fwcloud, openvpn) {
         return new Promise((resolve, reject) => {
             let sql = `SELECT VPN.id FROM openvpn VPN
-      INNER JOIN firewall FW ON FW.id=VPN.firewall
-      WHERE FW.fwcloud=${fwcloud} AND VPN.openvpn=${openvpn}`;
+                INNER JOIN firewall FW ON FW.id=VPN.firewall
+                WHERE FW.fwcloud=${fwcloud} AND VPN.openvpn=${openvpn}`;
             dbCon.query(sql, async (error, result) => {
                 if (error) return reject(error);
 
@@ -713,8 +822,8 @@ export class OpenVPN extends Model {
     public static getOpenvpnStatusNotZero(req, data) {
         return new Promise((resolve, reject) => {
             const sql = `SELECT VPN.id,VPN.status FROM openvpn VPN
-      INNER JOIN firewall FW on FW.id=VPN.firewall
-      WHERE VPN.status!=0 AND FW.fwcloud=${req.body.fwcloud}`
+                INNER JOIN firewall FW on FW.id=VPN.firewall
+                WHERE VPN.status!=0 AND FW.fwcloud=${req.body.fwcloud}`
             req.dbCon.query(sql, (error, rows) => {
                 if (error) return reject(error);
                 data.openvpn_status = rows;
@@ -723,9 +832,9 @@ export class OpenVPN extends Model {
         });
     };
 
-    public static addToGroup(req) {
+    public static addToGroup(dbCon: any, openvpn: number, ipobj_g: number) {
         return new Promise((resolve, reject) => {
-            req.dbCon.query(`INSERT INTO openvpn__ipobj_g values(${req.body.ipobj},${req.body.ipobj_g})`, (error, result) => {
+            dbCon.query(`INSERT INTO openvpn__ipobj_g values(${openvpn},${ipobj_g})`, (error, result) => {
                 if (error) return reject(error);
                 resolve(result.insertId);
             });
@@ -748,7 +857,8 @@ export class OpenVPN extends Model {
             try {
                 const fwData: any = await Firewall.getFirewallSSH(req);
 
-                let data = await sshTools.runCommand(fwData.SSHconn, `sudo cat "${status_file_path}"`);
+                const sudo = fwData.SSHconn.username === 'root' ? '' : 'sudo';
+                let data = await sshTools.runCommand(fwData.SSHconn, `${sudo} cat "${status_file_path}"`);
                 // Remove the first line ()
                 let lines = data.split('\n');
                 if (lines[0].startsWith('[sudo] password for '))

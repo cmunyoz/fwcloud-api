@@ -32,6 +32,7 @@ import { IPObjGroup } from "../../../models/ipobj/IPObjGroup";
 import { PolicyRuleToIPObj } from "../../../models/policy/PolicyRuleToIPObj";
 import { Firewall } from "../../../models/firewall/Firewall";
 import { FirewallTerraformer } from "./table-terraformers/firewall.terraformer";
+import { EventEmitter } from "events";
 
 const TERRAFORMERS: {[tableName: string]: typeof TableTerraformer} = {};
 TERRAFORMERS[FwcTree._getTableName()] = FwcTreeTerraformer;
@@ -40,11 +41,9 @@ TERRAFORMERS[PolicyRuleToIPObj._getTableName()] = PolicyRuleToIpObjTerraformer;
 TERRAFORMERS[Firewall._getTableName()] = FirewallTerraformer;
 
 export class Terraformer {
-    protected _queryRunner: QueryRunner;
     protected _mapper: ImportMapping;
 
-    constructor(queryRunner: QueryRunner, mapper: ImportMapping) {
-        this._queryRunner = queryRunner;
+    constructor(mapper: ImportMapping, protected readonly eventEmitter = new EventEmitter()) {
         this._mapper = mapper;
     }
     
@@ -53,18 +52,9 @@ export class Terraformer {
      * 
      * @param exportResults 
      */
-    public async terraform(exportResults: ExporterResult): Promise<ExporterResult> {
-        const result: ExporterResult = new ExporterResult();
-
-        const data: ExporterResultData = exportResults.getAll();
-        
-        for(let tableName in data) {
-            const terraformer: TableTerraformer = await (await this.getTerraformer(tableName)).make(this._mapper, this._queryRunner);
-            const terraformedData: Array<object> = await terraformer.terraform(tableName, data[tableName]);
-            result.addTableData(tableName, terraformedData);
-        }
-
-        return result;
+    public async terraform(tableName: string, data: object[]): Promise<object[]> {
+        const terraformer: TableTerraformer = await (await this.getTerraformer(tableName)).make(this._mapper, this.eventEmitter);
+        return await terraformer.terraform(tableName, data);
     }
 
     protected async getTerraformer(tableName: string): Promise<typeof TableTerraformer> {

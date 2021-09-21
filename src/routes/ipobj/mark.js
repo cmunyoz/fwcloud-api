@@ -25,9 +25,13 @@ var express = require('express');
 var router = express.Router();
 
 import { Mark } from '../../models/ipobj/Mark';
-import { PolicyCompilation } from '../../models/policy/PolicyCompilation';
+import { Firewall } from '../../models/firewall/Firewall';
+import { OpenVPN } from '../../models/vpn/openvpn/OpenVPN';
+import { app, logger } from '../../fonaments/abstract-application';
+import { getRepository } from 'typeorm';
+import { FirewallService } from '../../models/firewall/firewall.service';
 import { Tree } from '../../models/tree/Tree';
-import { logger } from '../../fonaments/abstract-application';
+import { FwcTree } from '../../models/tree/fwc-tree.model';
 const restrictedCheck = require('../../middleware/restricted');
 const fwcError = require('../../utils/error_table');
 
@@ -68,14 +72,35 @@ router.put('/', async (req, res) => {
 		if (existsId && existsId!==req.body.mark) 
 			throw fwcError.ALREADY_EXISTS;
 
-		// Invalidate the compilation of the rules that use this mark.
-		const search = await Mark.searchMarkUsage(req.dbCon,req.body.fwcloud,req.body.mark);
-		await PolicyCompilation.deleteRulesCompilation(req.body.fwcloud,search.restrictions.MarkInRule);
-
    	// Modify the mark data.
 		await Mark.modifyMark(req);
+		//Update all group nodes which references the mark to set the new name
+		await getRepository(FwcTree).createQueryBuilder('node')
+			.update(FwcTree)
+			.set({
+				name: req.body.name
+			})
+			.where('node_type = :type', {type: "MRK"})
+			.andWhere('id_obj = :id', {id: req.body.mark})
+			.execute();
 
-		res.status(204).end();
+		const mark = await getRepository(Mark).findOneOrFail(req.body.mark, {
+			relations: ['policyRules', 'routingRuleToMarks', 'routingRuleToMarks.routingRule', 'routingRuleToMarks.routingRule.routingTable']
+		});
+
+		const firewallService = await app().getService(FirewallService.name);
+		const affectedFirewallsIds = [].concat(
+			mark.policyRules.map(item => item.firewallId),
+			mark.routingRuleToMarks.map(item => item.routingRule.routingTable.firewallId)
+		);
+
+		await firewallService.markAsUncompiled(affectedFirewallsIds);
+
+		var data_return = {};
+		await Firewall.getFirewallStatusNotZero(req.body.fwcloud, data_return);
+		await OpenVPN.getOpenvpnStatusNotZero(req, data_return);
+
+		res.status(200).json(data_return);
 	} catch(error) {
 		logger().error('Error updating new mark: ' + JSON.stringify(error));
 		res.status(400).json(error);

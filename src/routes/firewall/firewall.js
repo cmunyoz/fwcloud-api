@@ -75,11 +75,13 @@ import { FirewallExport } from '../../export/FirewallExport';
  */
 import { FwCloud } from '../../models/fwcloud/FwCloud';
 import { Interface } from '../../models/interface/Interface';
-import { PolicyCompilation } from '../../models/policy/PolicyCompilation';
 import { Tree } from '../../models/tree/Tree';
 import { PolicyRule } from '../../models/policy/PolicyRule';
-import { logger } from '../../fonaments/abstract-application';
+import { app, logger } from '../../fonaments/abstract-application';
 import { PgpHelper } from '../../utils/pgp';
+import { FirewallService } from '../../models/firewall/firewall.service';
+import { RoutingTableService } from '../../models/routing/routing-table/routing-table.service';
+import { getRepository } from 'typeorm';
 
 var utilsModel = require("../../utils/utils.js");
 const restrictedCheck = require('../../middleware/restricted');
@@ -258,7 +260,6 @@ router.put('/', async (req, res) => {
 	};
 
 	try {
-		await PolicyCompilation.deleteFullFirewallPolicy_c(req.dbCon,req.body.firewall);
 		await Firewall.updateFirewallStatus(req.body.fwcloud, req.body.firewall, "|3");
 		await Firewall.checkBodyFirewall(firewallData, false);
 
@@ -457,7 +458,7 @@ router.put('/cloud/get', async (req, res) => {
 		else
 			res.status(204).end();
 	} catch(error) {
-		logger().error('Error getting cloud firewalsl: ' + JSON.stringify(error)); 
+		logger().error('Error getting cloud firewalls: ' + JSON.stringify(error)); 
 		res.status(400).json(error);
 	}
 });
@@ -629,6 +630,9 @@ router.put('/clone', async (req, res) => {
 		await utilsModel.createFirewallDataDir(req.body.fwcloud, idNewFirewall);
 		await Tree.insertFwc_Tree_New_firewall(req.body.fwcloud, req.body.node_id, idNewFirewall);
 
+		const firewallService = await app().getService(FirewallService.name);
+		await firewallService.clone(req.body.firewall, idNewFirewall, dataI);
+		
 		res.status(200).json(data);
 	} catch(error) { 
 		logger().error('Error cloning firewall: ' + JSON.stringify(error));
@@ -705,7 +709,9 @@ router.put('/del',
 	restrictedCheck.firewall,
 	async(req, res) => {
 		try {
-			await Firewall.deleteFirewall(req.session.user_id, req.body.fwcloud, req.body.firewall);
+			const firewallService = await app().getService(FirewallService.name);
+			await firewallService.remove(req.body.firewall, req.body.fwcloud, req.session.user_id);
+
 			res.status(204).end();
 		} catch (error) {
 			logger().error('Error removing firewall: ' + JSON.stringify(error));
@@ -722,7 +728,8 @@ restrictedCheck.firewallApplyTo,
 async (req, res) => {
 	//CHECK FIREWALL DATA TO DELETE
 	try {
-		const data = await Firewall.deleteFirewallFromCluster(req);
+		const firewallService = await app().getService(FirewallService.name);
+		const data = await firewallService.deleteFirewallFromCluster(req.body.cluster, req.body.firewall, req.body.fwcloud, req.session.user_id);
 		if (data && data.result)
 			res.status(200).json(data);
 	 	else
