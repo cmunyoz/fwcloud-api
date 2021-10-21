@@ -16,8 +16,7 @@ export type CreateOpenVPNStatusHistoryData = {
 export type FindOpenVPNStatusHistoryOptions = {
     rangeTimestamp?: [number, number],
     name?: string,
-    address?: string,
-    openVPNServerId?: number;
+    address?: string
 }
 
 export type ClientHistoryConnection = {
@@ -35,6 +34,15 @@ export type ClientHistory = {
 export type FindResponse = {
     [cn: string]: ClientHistory
 }
+
+type GraphDataPoint = {
+    timestamp: number,
+    bytesReceived: number,
+    bytesSent: number
+}
+
+export type GraphDataResponse = GraphDataPoint[];
+
 
 export class OpenVPNStatusHistoryService extends Service {
     protected _repository: Repository<OpenVPNStatusHistory>;
@@ -119,8 +127,16 @@ export class OpenVPNStatusHistoryService extends Service {
         return entries;
     }
 
-    async find(options: FindOpenVPNStatusHistoryOptions = {}): Promise<FindResponse> {
-        const query: SelectQueryBuilder<OpenVPNStatusHistory> = this._repository.createQueryBuilder('record');
+    /**
+     * Finds OpenVPNStatusHistory based on the openvpn server id and the options provided
+     * 
+     * @param openVpnServerId 
+     * @param options 
+     * @returns 
+     */
+    find(openVpnServerId: number, options: FindOpenVPNStatusHistoryOptions = {}): Promise<OpenVPNStatusHistory[]> {
+        const query: SelectQueryBuilder<OpenVPNStatusHistory> = this._repository.createQueryBuilder('record')
+            .andWhere(`record.openVPNServerId = :serverId`, {serverId: openVpnServerId});
 
         if (Object.prototype.hasOwnProperty.call(options, "rangeTimestamp")) {
             query.andWhere(`record.timestamp BETWEEN :start and :end`, {
@@ -137,11 +153,19 @@ export class OpenVPNStatusHistoryService extends Service {
             query.andWhere(`record.address = :address`, {address: options.address})
         }
 
-        if (Object.prototype.hasOwnProperty.call(options, "openVPNServerId")) {
-            query.andWhere(`record.openVPNServerId = :openVPNServerId`, {openVPNServerId: options.openVPNServerId})
-        }
+        return query.orderBy('timestamp', 'ASC').getMany();
+    }
 
-        const results: OpenVPNStatusHistory[] = await query.orderBy('timestamp', 'ASC').getMany();
+    /**
+     * Return the data required to generate the history table
+     * 
+     * @param openVpnServerId 
+     * @param options 
+     * @returns 
+     */
+    async history(openVpnServerId: number, options: FindOpenVPNStatusHistoryOptions = {}): Promise<FindResponse> {
+        const results: OpenVPNStatusHistory[] = await this.find(openVpnServerId, options);
+
         let names: string[] = [...new Set(results.map(item => item.name))];
         let result: FindResponse = {}
 
@@ -180,5 +204,68 @@ export class OpenVPNStatusHistoryService extends Service {
         }
 
         return result;
+    }
+
+    /**
+     * Returns the graph points data in order to print graphs
+     * 
+     * @param openVpnServerId 
+     * @param options 
+     * @returns 
+     */
+    async graph(openVpnServerId: number, options: FindOpenVPNStatusHistoryOptions = {}): Promise<GraphDataResponse> {
+        const results: OpenVPNStatusHistory[] = await this.find(openVpnServerId, options);
+
+        // Get results timestamps
+        // IMPORTANT! timestamps must be ordered from lower to higher in order to detect disconnection correctly
+        let timestamps: number[] = [...new Set(results.map(item => item.timestamp))].sort((a,b) => a < b ? 1 : -1);
+
+        const response: GraphDataResponse = timestamps.map(timestamp => {
+            //Get all records with the same timestamp
+            const records: OpenVPNStatusHistory[] = results.filter(item => item.timestamp === timestamp);
+
+            // Then calculate bytesReceived/bytesSent accumulated.
+            // bytesReceviedSent will contain all bytesReceived added in index 0 and all bytesSent added in index 1
+            const bytesReceivedSent: [number, number] = records.reduce<[number, number]>((bytes: [number, number], item: OpenVPNStatusHistory) => {
+                return [bytes[0] + item.bytesReceived, bytes[1] + item.bytesSent];
+            }, [0, 0])
+
+            return {
+                timestamp,
+                bytesReceived: bytesReceivedSent[0],
+                bytesSent: bytesReceivedSent[1]
+            };
+        });
+
+        return this.limitGraphPoints(response);
+    }
+
+    /**
+     * If the results contains more than limit points, it calculates average points based on provided points
+     * in order to fit the limit
+     * 
+     * @param data 
+     * @param limit 
+     * @returns 
+     */
+    protected limitGraphPoints(data: GraphDataResponse, limit: number = 200): GraphDataResponse {
+        if (data.length < limit) {
+            return data;
+        }
+
+        const count: number = Math.ceil(data.length / limit);
+        const result: GraphDataResponse = []
+
+        while(data.length > 0) {
+            const group: GraphDataResponse = data.splice(0, count);
+
+            result.push({
+                //Timestamp median
+                timestamp: group[0].timestamp + ((group[count - 1].timestamp - group[0].timestamp)/2),
+                // BytesReceived / Sent average
+                bytesReceived: group.reduce<number>((average, item) => { return average + item.bytesReceived}, 0) / group.length,
+                bytesSent: group.reduce<number>((average, item) => { return average + item.bytesSent}, 0) / group.length,
+            });
+        }
     }
 }
