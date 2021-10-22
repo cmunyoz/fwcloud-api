@@ -57,8 +57,8 @@ export class AgentCommunication extends Communication<AgentCommunicationData> {
             eventEmitter.emit('message', new ProgressNoticePayload("Installing firewall script."));
             eventEmitter.emit('message', new ProgressNoticePayload("Loading firewall policy."));
 
-            const config: AxiosRequestConfig = Object.assign(this.config, {});
-            config.headers = Object.assign(form.getHeaders(), config.headers);
+            const config: AxiosRequestConfig = Object.assign({}, this.config);
+            config.headers = Object.assign({}, form.getHeaders(), config.headers);
 
             const response: AxiosResponse<string> = await axios.post(pathUrl, form, config);
 
@@ -70,28 +70,32 @@ export class AgentCommunication extends Communication<AgentCommunicationData> {
         }
     }
 
-    async installOpenVPNConfig(config: unknown, dir: string, name: string, type: number, eventEmitter: EventEmitter = new EventEmitter()): Promise<void> {
+    async installOpenVPNConfig(dir: string, configs: {name: string, content: string}[], type: number, eventEmitter?: EventEmitter): Promise<void> {
         try {
             const pathUrl: string = this.url + '/api/v1/openvpn/files/upload';
             const form = new FormData();
             form.append('dst_dir', dir);
-            form.append('data', config, name);
 
+            configs.forEach(config => {
+                form.append('data', config.content, config.name);
+                if (type === 1) {
+                    eventEmitter.emit('message', new ProgressInfoPayload(`Uploading configuration file '${dir}/${config.name}' to: (${this.connectionData.host})\n`));
+                } else {
+                    eventEmitter.emit('message', new ProgressNoticePayload(`Uploading OpenVPN configuration file '${dir}/${config.name}' to: (${this.connectionData.host})\n`));
+                }
+            });
 
             if (type === 1) {
                 // Client certificarte
-                eventEmitter.emit('message', new ProgressInfoPayload(`Uploading CCD configuration file '${dir}/${name}' to: (${this.connectionData.host})\n`));
                 form.append('perms', 644);
             } else {
-                eventEmitter.emit('message', new ProgressNoticePayload(`Uploading OpenVPN configuration file '${dir}/${name}' to: (${this.connectionData.host})\n`));
                 form.append('perms', 600);
             }
 
-            const requestConfig: AxiosRequestConfig = Object.assign(this.config, {});
-            requestConfig.headers = Object.assign(form.getHeaders(), requestConfig.headers);
+            const requestConfig: AxiosRequestConfig = Object.assign({}, this.config);
+            requestConfig.headers = Object.assign({}, form.getHeaders(), requestConfig.headers);
 
             await axios.post(pathUrl, form, requestConfig);
-
         } catch(error) {
             this.handleRequestException(error, eventEmitter);
         }
@@ -99,17 +103,20 @@ export class AgentCommunication extends Communication<AgentCommunicationData> {
 
     async uninstallOpenVPNConfig(dir: string, files: string[], eventEmitter: EventEmitter = new EventEmitter()): Promise<void> {
         try {
-            eventEmitter.emit('message', new ProgressNoticePayload(`Removing OpenVPN configuration file '${dir}/[${files.join(", ")}]' from: (${this.connectionData.host})\n`));
+            files.forEach(file => {
+                eventEmitter.emit('message', new ProgressNoticePayload(`Removing OpenVPN configuration file '${dir}/${file}' from: (${this.connectionData.host})\n`));
+            });
+
 
             const pathUrl: string = this.url + '/api/v1/openvpn/files/remove';
 
-            const config: AxiosRequestConfig = Object.assign(this.config, {});
+            const config: AxiosRequestConfig = Object.assign({}, this.config);
             config.data = {
                 dir: dir,
                 files: files
             }
 
-            axios.delete(pathUrl, this.config);
+            axios.delete(pathUrl, config);
 
         } catch(error) {
             this.handleRequestException(error, eventEmitter);
@@ -152,7 +159,7 @@ export class AgentCommunication extends Communication<AgentCommunicationData> {
         try {
             const pathUrl: string = this.url + "/api/v1/openvpn/files/sha256";
 
-            const config: AxiosRequestConfig = Object.assign(this.config, {});
+            const config: AxiosRequestConfig = Object.assign({}, this.config);
             config.headers["Content-Type"] = "application/json";
 
             const response: AxiosResponse<string> = await axios.put(pathUrl, {
@@ -191,13 +198,13 @@ export class AgentCommunication extends Communication<AgentCommunicationData> {
             const dir: string = path.dirname(statusFilepath);
             const filename: string = path.basename(statusFilepath);
 
-            const config: AxiosRequestConfig = Object.assign(this.config, {});
+            const config: AxiosRequestConfig = Object.assign({}, this.config);
             config.headers["Content-Type"] = "application/json";
 
             const response: AxiosResponse<string> = await axios.put(urlPath, {
                 dir: dir,
                 files: [filename]
-            }, this.config);
+            }, config);
 
             if (response.status === 200) {
                 return response.data;
@@ -215,13 +222,13 @@ export class AgentCommunication extends Communication<AgentCommunicationData> {
             const dir: string = path.dirname(filepath);
             const pathUrl: string = this.url + "/api/v1/openvpn/get/status";
 
-            const config: AxiosRequestConfig = Object.assign(this.config, {});
+            const config: AxiosRequestConfig = Object.assign({}, this.config);
             config.headers["Content-Type"] = "application/json";
 
             const response: AxiosResponse<string> = await axios.put(pathUrl, {
                 dir,
                 files: [filename]
-            }, this.config);
+            }, config);
 
             if (response.status === 200) {
                 return response.data.split("\n").filter(item => item !== '').slice(1).map(item => ({
