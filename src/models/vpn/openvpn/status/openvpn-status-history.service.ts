@@ -7,8 +7,8 @@ export type CreateOpenVPNStatusHistoryData = {
     timestamp: number;
     name: string;
     address: string;
-    bytesReceived: number;
-    bytesSent: number;
+    megaBytesReceived: number;
+    megaBytesSent: number;
     connectedAt: Date;
     disconnectedAt?: Date;
 }
@@ -26,8 +26,8 @@ export type GraphOpenVPNStatusHistoryOptions = {
 export type ClientHistoryConnection = {
     connected_at: Date,
     disconnected_at: Date | null,
-    bytesSent: number,
-    bytesReceived: number,
+    megaBytesSent: number,
+    megaBytesReceived: number,
     address: string
 }
 
@@ -41,10 +41,10 @@ export type FindResponse = {
 
 type GraphDataPoint = {
     timestamp: number,
-    bytesReceived: number,
-    bytesReceivedSpeed: number,
-    bytesSent: number,
-    bytesSentSpeed: number,
+    megaBytesReceived: number,
+    megaBytesReceivedSpeed: number,
+    megaBytesSent: number,
+    megaBytesSentSpeed: number,
 }
 
 export type GraphDataResponse = GraphDataPoint[];
@@ -60,7 +60,7 @@ export class OpenVPNStatusHistoryService extends Service {
 
     /**
      * Creates and persists a batch.
-     * It detects CN disconnection and creates entries with disconnectedAt information
+     * It detects CN disconnection and updates entries with disconnectedAt information
      * 
      * @param serverOpenVPNId 
      * @param data 
@@ -84,20 +84,18 @@ export class OpenVPNStatusHistoryService extends Service {
             .orderBy('history.timestamp', 'DESC')
             .getOne()
         
-        let lastbatch: OpenVPNStatusHistory[] = [];
+        let lastTimestampedBatch: OpenVPNStatusHistory[] = [];
         if (lastEntry) {
-            lastbatch = await getRepository(OpenVPNStatusHistory).createQueryBuilder('history')
+            lastTimestampedBatch = await getRepository(OpenVPNStatusHistory).createQueryBuilder('history')
             .where('history.openVPNServerId = :openvpn', {openvpn: serverOpenVPN.id})
             .andWhere('history.timestamp = :timestamp', {timestamp: lastEntry.timestamp})
             .getMany();
         }
 
-        // If the data is empty, then set disconnect timestamp on the previous batch and returns
+        // If the data is empty, then detect disconnections and returns.
         if (data.length === 0) {
-            for (let item of lastbatch.filter(item => item.disconnectedAt === null)) {
-                item.disconnectedAt = new Date(item.timestamp);
-                await getRepository(OpenVPNStatusHistory).save(item);
-            }
+            // In this case, all previous connections will be set as disconnected.
+            await this.detectDisconnections([], lastTimestampedBatch);
             return [];
         }
 
@@ -108,25 +106,17 @@ export class OpenVPNStatusHistoryService extends Service {
         let entries: OpenVPNStatusHistory[] = [];
 
         for(let timestamp of timestamps) {
-            const batch: CreateOpenVPNStatusHistoryData[] = data.filter(item => item.timestamp === timestamp);
+            const timestampedBatch: CreateOpenVPNStatusHistoryData[] = data.filter(item => item.timestamp === timestamp);
         
-            // If the current batch doesn't have an entry which exists on the previous batch,
-            // then we must add an entry to the batch with a disconnectedAt value
-            for (let previous of lastbatch.filter(item => item.disconnectedAt === null)) {
-                //If the persisted name is not present in the batch, then we must set as disconnected
-                if (batch.findIndex(item => previous.name === item.name ) < 0) {
-                    previous.disconnectedAt = new Date(previous.timestamp);
-                    await getRepository(OpenVPNStatusHistory).save(previous);
-                }
-            }
+            await this.detectDisconnections(timestampedBatch, lastTimestampedBatch);
 
-            //Once this batch is persisted, they become lastbatch for the next iteration
-            lastbatch = await getRepository(OpenVPNStatusHistory).save(batch.map(item => {
+            //Once this batch is persisted, they become lastTimestampedBatch for the next iteration
+            lastTimestampedBatch = await getRepository(OpenVPNStatusHistory).save(timestampedBatch.map(item => {
                 (item as OpenVPNStatusHistory).openVPNServerId = serverOpenVPN.id;
                 return item;
             }));
 
-            entries = entries.concat(lastbatch);
+            entries = entries.concat(lastTimestampedBatch);
         }
         return entries;
     }
@@ -183,14 +173,14 @@ export class OpenVPNStatusHistoryService extends Service {
                     currentConnection = {
                         connected_at: entry.connectedAt,
                         disconnected_at: null,
-                        bytesSent: entry.bytesSent,
-                        bytesReceived: entry.bytesReceived,
+                        megaBytesSent: entry.megaBytesSent,
+                        megaBytesReceived: entry.megaBytesReceived,
                         address: entry.address
                     }
                 }
 
-                currentConnection.bytesReceived = entry.bytesReceived;
-                currentConnection.bytesSent = entry.bytesSent;
+                currentConnection.megaBytesReceived = entry.megaBytesReceived;
+                currentConnection.megaBytesSent = entry.megaBytesSent;
                 
                 if (entry.disconnectedAt) {
                     currentConnection.disconnected_at = entry.disconnectedAt
@@ -228,33 +218,33 @@ export class OpenVPNStatusHistoryService extends Service {
             //Get all records with the same timestamp
             const records: OpenVPNStatusHistory[] = results.filter(item => item.timestamp === timestamp);
 
-            // Then calculate bytesReceived/bytesSent accumulated.
-            // bytesReceviedSent will contain all bytesReceived added in index 0 and all bytesSent added in index 1
-            const bytesReceivedSent: [number, number] = records.reduce<[number, number]>((bytes: [number, number], item: OpenVPNStatusHistory) => {
-                return [bytes[0] + item.bytesReceived, bytes[1] + item.bytesSent];
+            // Then calculate megaBytesReceived/megaBytesSent accumulated.
+            // megaBytesReceviedSent will contain all megaBytesReceived added in index 0 and all megaBytesSent added in index 1
+            const megaBytesReceivedSent: [number, number] = records.reduce<[number, number]>((megaBytes: [number, number], item: OpenVPNStatusHistory) => {
+                return [megaBytes[0] + item.megaBytesReceived, megaBytes[1] + item.megaBytesSent];
             }, [0, 0])
 
             return {
                 timestamp,
-                bytesReceived: bytesReceivedSent[0],
-                bytesSent: bytesReceivedSent[1],
-                bytesReceivedSpeed: null,
-                bytesSentSpeed: null
+                megaBytesReceived: megaBytesReceivedSent[0],
+                megaBytesSent: megaBytesReceivedSent[1],
+                megaBytesReceivedSpeed: null,
+                megaBytesSentSpeed: null
             };
         });
 
         return this.limitGraphPoints(response, options.limit)
-            // bytesReceivedSpeed and bytesSentSpeed calculation
+            // megaBytesReceivedSpeed and megaBytesSentSpeed calculation
             .map((item, index, results) => {
                 // If index = 0, there is not previous value thus speeds must be null
                 if (index !== 0) {
                     const previous = results[index - 1];
-                    item.bytesReceivedSpeed = item.bytesReceived - previous.bytesReceived > 0
-                        ? (item.bytesReceived - previous.bytesReceived) / ((item.timestamp - previous.timestamp) / 1000)
+                    item.megaBytesReceivedSpeed = item.megaBytesReceived - previous.megaBytesReceived > 0
+                        ? (item.megaBytesReceived - previous.megaBytesReceived) / ((item.timestamp - previous.timestamp) / 1000)
                         : 0;
 
-                    item.bytesSentSpeed = item.bytesSent - previous.bytesSent > 0
-                        ? (item.bytesSent - previous.bytesSent) / ((item.timestamp - previous.timestamp) / 1000)
+                    item.megaBytesSentSpeed = item.megaBytesSent - previous.megaBytesSent > 0
+                        ? (item.megaBytesSent - previous.megaBytesSent) / ((item.timestamp - previous.timestamp) / 1000)
                         : 0;
                 }
 
@@ -285,14 +275,48 @@ export class OpenVPNStatusHistoryService extends Service {
             result.push({
                 //Timestamp median
                 timestamp: group[0].timestamp + ((group[group.length - 1].timestamp - group[0].timestamp)/2),
-                // BytesReceived / Sent average
-                bytesReceived: group.reduce<number>((average, item) => { return average + item.bytesReceived}, 0) / group.length,
-                bytesSent: group.reduce<number>((average, item) => { return average + item.bytesSent}, 0) / group.length,
-                bytesSentSpeed: null,
-                bytesReceivedSpeed: null
+                // megaBytesReceived / Sent average
+                megaBytesReceived: group.reduce<number>((average, item) => { return average + item.megaBytesReceived}, 0) / group.length,
+                megaBytesSent: group.reduce<number>((average, item) => { return average + item.megaBytesSent}, 0) / group.length,
+                megaBytesSentSpeed: null,
+                megaBytesReceivedSpeed: null
             });
         }
 
         return result;
+    }
+
+    /**
+     * Detects client disconnections. If a client disconnection is detected, then
+     * a Date is set into "disconnectedAt" in the previous entry.
+     *
+     * A client has disconnected when:
+     *
+     *  1. It is present in the previous timestamped bacth but it isn't in the new one.
+     *  2. It is present in both batches but using different address.
+     *
+     * @param newTimestampedBatch
+     * @param previousTimestampedBatch
+     */
+    protected async detectDisconnections(newTimestampedBatch: CreateOpenVPNStatusHistoryData[], previousTimestampedBatch: OpenVPNStatusHistory[]): Promise<void> {
+        // If the current batch doesn't have an entry which exists on the previous batch,
+        // then we must add an entry to the batch with a disconnectedAt value
+        for (let previous of previousTimestampedBatch.filter(item => item.disconnectedAt === null)) {
+            const matchIndex: number = newTimestampedBatch.findIndex(item => previous.name === item.name);
+
+            //If the persisted batch name is not present in the current batch, then we must set as disconnected
+            if ( matchIndex < 0) {
+                previous.disconnectedAt = new Date(previous.timestamp);
+                await getRepository(OpenVPNStatusHistory).save(previous);
+
+            } else {
+                // If the persisted batch name is present in the current batch but its address is different,
+                // then is a new connection.
+                if (previous.address !== newTimestampedBatch[matchIndex].address) {
+                    previous.disconnectedAt = new Date(previous.timestamp);
+                    await getRepository(OpenVPNStatusHistory).save(previous);
+                }
+            }
+        }
     }
 }
