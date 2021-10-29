@@ -37,18 +37,21 @@ export class createOpenvpnStatusHistory1633524573701 implements MigrationInterfa
                     isNullable: false,
                 },
                 {
-                    name: 'connected_at',
-                    type: 'datetime',
+                    name: 'connected_at_timestamp',
+                    type: 'int',
+                    unsigned: true,
                     isNullable: false
                 },
                 {
-                    name: 'disconnected_at',
-                    type: 'datetime',
+                    name: 'disconnected_at_timestamp',
+                    type: 'int',
+                    unsigned: true,
                     isNullable: true
                 },
                 {
                     name: 'timestamp',
-                    type: 'double',
+                    type: 'int',
+                    unsigned: true,
                     isNullable: false
                 },
                 {

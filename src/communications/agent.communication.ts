@@ -243,12 +243,12 @@ export class AgentCommunication extends Communication<AgentCommunicationData> {
 
             if (response.status === 200) {
                 return response.data.split("\n").filter(item => item !== '').slice(1).map(item => ({
-                    timestamp: parseInt(item.split(',')[0]) * 1000,
+                    timestamp: parseInt(item.split(',')[0]),
                     name: item.split(',')[1],
                     address: item.split(',')[2],
                     bytesReceived: parseInt(item.split(',')[3]),
                     bytesSent: parseInt(item.split(',')[4]),
-                    connectedAt: new Date(item.split(',')[5])
+                    connectedAtTimestampInSeconds: parseInt(item.split(',')[5]),
                 }));
             }
 
